@@ -1,0 +1,289 @@
+name: Check for New Releases
+
+on:
+  schedule:
+    - cron: '0 6 * * *'  # Daily at 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+# Serialize manual dispatches against the scheduled run so two concurrent
+# invocations cannot race on the commit/push of tracked-versions.json.
+concurrency:
+  group: check-releases
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          # PAT (admin actor) is required to push tracked-versions.json back
+          # to main. The default GITHUB_TOKEN runs as github-actions[bot],
+          # which the default-branch ruleset does not bypass.
+          token: ${{ secrets.CHECK_BUILDS }}
+
+      # -----------------------------------------------------------------------
+      # Read current tracked state.
+      # -----------------------------------------------------------------------
+      - name: Read tracked versions
+        id: tracked
+        run: |
+          set -o pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          with open('.github/tracked-versions.json') as f:
+              s = json.load(f)
+          print(f"truenas_version={s['truenas']['version']}")
+          print(f"train={s['truenas']['train']}")
+          print(f"gasket_driver={s['gasket']['driver']}")
+          print(f"gasket_ref={s['gasket']['ref']}")
+          PY
+
+      # -----------------------------------------------------------------------
+      # TrueNAS check: pick the latest stable scale-build tag, resolve its
+      # train from the download.truenas.com listing, and gate on the matching
+      # ISO actually being published. Tags can land hours or days before the
+      # ISO; defer the bump rather than fail mid-build.
+      # -----------------------------------------------------------------------
+      - name: Check for new TrueNAS release
+        id: truenas
+        env:
+          CURRENT_VERSION: ${{ steps.tracked.outputs.truenas_version }}
+          CURRENT_TRAIN: ${{ steps.tracked.outputs.train }}
+          # Public scale-build tag listing. Default GITHUB_TOKEN's 5000/hr
+          # quota is plenty. CHECK_BUILDS PAT is reserved for the push to main.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          echo "Currently tracked: ${CURRENT_VERSION} on train ${CURRENT_TRAIN}"
+
+          if ! TAGS_JSON=$(curl -fsSL "https://api.github.com/repos/truenas/scale-build/tags?per_page=100" \
+              -H "Authorization: Bearer ${GH_TOKEN}"); then
+            echo "::error title=TrueNAS check::failed to fetch scale-build tags"
+            exit 1
+          fi
+
+          # Stable tags are TS- followed by a purely-numeric dotted version
+          # (e.g. TS-25.10.3, TS-25.10.3.1). Any non-numeric suffix
+          # (BETA, RC, ALPHA, MASTER, ...) is a pre-release and excluded.
+          LATEST_TAG=$(printf '%s' "$TAGS_JSON" | python3 -c "
+          import sys, json, re
+          tags = json.load(sys.stdin)
+          stable_re = re.compile(r'^TS-(\d+(?:\.\d+)+)$')
+          stable = [(m.group(1), t['name']) for t in tags
+                    if (m := stable_re.match(t['name']))]
+          if not stable:
+              sys.exit(0)
+          stable.sort(key=lambda v: [int(p) for p in v[0].split('.')])
+          print(stable[-1][1])
+          ")
+
+          if [ -z "$LATEST_TAG" ]; then
+            echo "::error title=TrueNAS check::no stable tags found in scale-build (parser likely broken)"
+            exit 1
+          fi
+
+          LATEST_VERSION="${LATEST_TAG#TS-}"
+          echo "Latest scale-build tag: ${LATEST_TAG} (version: ${LATEST_VERSION})"
+
+          if [ "$LATEST_VERSION" = "$CURRENT_VERSION" ]; then
+            echo "No new TrueNAS release"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Defense against tag deletions / numeric regressions.
+          HIGHER=$(printf '%s\n%s\n' "$CURRENT_VERSION" "$LATEST_VERSION" | python3 -c "
+          import sys
+          versions = [line.strip() for line in sys.stdin if line.strip()]
+          versions.sort(key=lambda v: [int(p) for p in v.split('.')])
+          print(versions[-1])
+          ")
+          if [ "$HIGHER" != "$LATEST_VERSION" ]; then
+            echo "Latest tag ${LATEST_VERSION} is not higher than tracked ${CURRENT_VERSION} -- ignoring"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Resolve train name from the download.truenas.com listing.
+          if ! LISTING=$(curl -fsSL "https://download.truenas.com/"); then
+            echo "::error title=TrueNAS check::failed to fetch download.truenas.com listing"
+            exit 1
+          fi
+
+          TRAIN_COUNT=$(printf '%s' "$LISTING" | python3 -c "
+          import sys, re
+          trains = sorted(set(re.findall(r'TrueNAS-SCALE-([A-Z][a-zA-Z]+)/', sys.stdin.read())))
+          print(len(trains))
+          ")
+          # download.truenas.com historically lists 3+ trains (Angelfish, Cobia,
+          # Dragonfish, Electric Eel, Fangtooth, Goldeye, ...). Fewer than 3
+          # means the page is truncated, rate-limited, or the HTML changed.
+          if [ "$TRAIN_COUNT" -lt 3 ]; then
+            echo "::error title=TrueNAS check::download.truenas.com listing has only ${TRAIN_COUNT} train references -- looks broken or rate-limited"
+            exit 1
+          fi
+
+          MATCHED_TRAINS=$(printf '%s' "$LISTING" | LATEST_VERSION="$LATEST_VERSION" python3 -c "
+          import sys, os, re
+          version = os.environ['LATEST_VERSION']
+          listing = sys.stdin.read()
+          pattern = re.compile(r'TrueNAS-SCALE-([A-Z][a-zA-Z]+)/' + re.escape(version) + r'/')
+          for t in sorted(set(pattern.findall(listing))):
+              print(t)
+          ")
+
+          NUM_MATCHES=$(printf '%s' "$MATCHED_TRAINS" | python3 -c "
+          import sys
+          print(sum(1 for line in sys.stdin if line.strip()))
+          ")
+
+          if [ "$NUM_MATCHES" -eq 0 ]; then
+            echo "Tag ${LATEST_VERSION} found in scale-build, but not yet listed on download.truenas.com under any train. Will retry on next scheduled run."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$NUM_MATCHES" -gt 1 ]; then
+            echo "::error title=TrueNAS check::version ${LATEST_VERSION} appears under multiple trains -- refusing to guess"
+            echo "Matched trains:" >&2
+            printf '%s' "$MATCHED_TRAINS" | sed 's/^/  /' >&2
+            exit 1
+          fi
+
+          NEW_TRAIN=$(printf '%s' "$MATCHED_TRAINS" | python3 -c "
+          import sys
+          for line in sys.stdin:
+              s = line.strip()
+              if s:
+                  print(s)
+                  break
+          ")
+          echo "Resolved train for ${LATEST_VERSION}: ${NEW_TRAIN}"
+
+          # ISO-file gate: the directory exists, but the ISO itself may still
+          # be uploading. HEAD-check the actual file URL.
+          ISO_URL="https://download.truenas.com/TrueNAS-SCALE-${NEW_TRAIN}/${LATEST_VERSION}/TrueNAS-SCALE-${LATEST_VERSION}.iso"
+          if ! curl -fsI "$ISO_URL" >/dev/null 2>&1; then
+            echo "ISO not yet published at ${ISO_URL}. Will retry on next scheduled run."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$NEW_TRAIN" != "$CURRENT_TRAIN" ]; then
+            echo "::notice title=TrueNAS train rollover::train moved from ${CURRENT_TRAIN} to ${NEW_TRAIN} (version ${LATEST_VERSION})"
+          fi
+
+          echo "New TrueNAS release detected, train resolved, ISO is published."
+          {
+            echo "changed=true"
+            echo "version=${LATEST_VERSION}"
+            echo "train=${NEW_TRAIN}"
+          } >> "$GITHUB_OUTPUT"
+
+      # -----------------------------------------------------------------------
+      # If TrueNAS moved, resolve the runner from the post-bump train+version.
+      # The runner's GLIBC must be <= the TrueNAS rootfs's; resolve-runner.sh
+      # fails loud on an unmapped Debian release, which is the explicit signal.
+      # -----------------------------------------------------------------------
+      - name: Resolve build runner
+        id: runner
+        if: steps.truenas.outputs.changed == 'true'
+        run: |
+          TRAIN="${{ steps.truenas.outputs.train }}"
+          VERSION="${{ steps.truenas.outputs.version }}"
+          RUNNER=$(.github/scripts/resolve-runner.sh "$TRAIN" "$VERSION")
+          echo "runner=${RUNNER}" >> "$GITHUB_OUTPUT"
+
+      # -----------------------------------------------------------------------
+      # Single commit covering the TrueNAS fields that moved. The state file is
+      # rewritten in place; build.yml reads it at runtime so no workflow file
+      # changes are needed.
+      # -----------------------------------------------------------------------
+      - name: Update tracked-versions
+        id: write
+        if: steps.truenas.outputs.changed == 'true'
+        env:
+          NEW_TRUENAS_VERSION: ${{ steps.truenas.outputs.version }}
+          NEW_TRAIN: ${{ steps.truenas.outputs.train }}
+          CURRENT_TRAIN: ${{ steps.tracked.outputs.train }}
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import json, os
+          with open('.github/tracked-versions.json') as f:
+              s = json.load(f)
+          s['truenas']['version'] = os.environ['NEW_TRUENAS_VERSION']
+          s['truenas']['train']   = os.environ['NEW_TRAIN']
+          with open('.github/tracked-versions.json', 'w') as f:
+              json.dump(s, f, indent=2)
+              f.write('\n')
+          PY
+
+          FINAL_TRUENAS_VERSION="$NEW_TRUENAS_VERSION"
+          FINAL_TRAIN="$NEW_TRAIN"
+
+          if [ "$NEW_TRAIN" != "$CURRENT_TRAIN" ]; then
+            MSG="Update tracked TrueNAS version to ${NEW_TRUENAS_VERSION} (train: ${NEW_TRAIN})"
+          else
+            MSG="Update tracked TrueNAS version to ${NEW_TRUENAS_VERSION}"
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .github/tracked-versions.json
+          git commit -m "$MSG" || {
+            echo "ERROR: Failed to commit tracked-versions update"
+            exit 1
+          }
+          # Retry once on push failure: if main moved (e.g. Dependabot merge)
+          # between checkout and now, rebase on top and try again.
+          if ! git push; then
+            echo "Push failed, attempting rebase and retry..."
+            git pull --rebase || {
+              echo "::error title=Push failed::git pull --rebase failed after push rejection"
+              exit 1
+            }
+            git push || {
+              echo "::error title=Push failed::git push failed after rebase retry"
+              exit 1
+            }
+          fi
+
+          {
+            echo "truenas_version=${FINAL_TRUENAS_VERSION}"
+            echo "train=${FINAL_TRAIN}"
+          } >> "$GITHUB_OUTPUT"
+
+      # -----------------------------------------------------------------------
+      # Dispatch build.yml with the post-update values. mark_latest='false' is
+      # the gate that prevents an unverified auto-build from displacing the
+      # human-promoted Latest release.
+      # -----------------------------------------------------------------------
+      - name: Trigger build
+        if: steps.truenas.outputs.changed == 'true'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'build.yml',
+              ref: 'main',
+              inputs: {
+                truenas_version:      '${{ steps.write.outputs.truenas_version }}',
+                gasket_driver_version: '${{ steps.tracked.outputs.gasket_driver }}',
+                gasket_ref:           '${{ steps.tracked.outputs.gasket_ref }}',
+                train_name:           '${{ steps.write.outputs.train }}',
+                runner:               '${{ steps.runner.outputs.runner }}',
+                mark_latest:          'false'
+              }
+            });
+            console.log('Dispatched build.yml: TrueNAS ${{ steps.write.outputs.truenas_version }} (${{ steps.write.outputs.train }}), gasket ${{ steps.tracked.outputs.gasket_driver }}, runner ${{ steps.runner.outputs.runner }}');
