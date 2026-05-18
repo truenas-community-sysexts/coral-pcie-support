@@ -1,0 +1,18 @@
+[Unit]
+Description=Google Coral PCIe TPU Setup
+After=local-fs.target systemd-modules-load.service
+Before=docker.service
+StartLimitBurst=3
+StartLimitIntervalSec=60
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash -c '[ -e /sys/module/gasket ] || /sbin/insmod /usr/lib/modules/$(uname -r)/extra/gasket.ko'
+ExecStart=/bin/bash -c '[ -e /sys/module/apex ] || /sbin/insmod /usr/lib/modules/$(uname -r)/extra/apex.ko'
+ExecStart=-/usr/bin/udevadm trigger --subsystem-match=apex
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
