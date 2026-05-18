@@ -1,0 +1,23 @@
+From: TrueNAS Community Sysexts <community-sysexts@truenas.org>
+Subject: [PATCH 1/4] gasket: remove .llseek = no_llseek assignment
+
+Since kernel 6.13, no_llseek has been removed. Omitting the .llseek
+field is safe across all kernel versions because the default behavior
+is equivalent to no_llseek.
+
+---
+ src/gasket_core.c | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/src/gasket_core.c b/src/gasket_core.c
+index b1c2726..febaade 100644
+--- a/src/gasket_core.c
++++ b/src/gasket_core.c
+@@ -1373,7 +1373,6 @@ static long gasket_ioctl(struct file *filp, uint cmd, ulong arg)
+ /* File operations for all Gasket devices. */
+ static const struct file_operations gasket_file_ops = {
+ 	.owner = THIS_MODULE,
+-	.llseek = no_llseek,
+ 	.mmap = gasket_mmap,
+ 	.open = gasket_open,
+ 	.release = gasket_release,

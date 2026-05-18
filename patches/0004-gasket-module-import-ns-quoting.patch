@@ -1,0 +1,28 @@
+From: TrueNAS Community Sysexts <community-sysexts@truenas.org>
+Subject: [PATCH 4/4] gasket: version guard for MODULE_IMPORT_NS quoting
+
+Kernel >= 6.13 requires MODULE_IMPORT_NS argument to be a quoted string.
+Older kernels use the unquoted form. Add a version guard with the
+__has_include check for dma-buf.h retained.
+
+---
+ src/gasket_page_table.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/src/gasket_page_table.c b/src/gasket_page_table.c
+index c9067cb..c1f04b4 100644
+--- a/src/gasket_page_table.c
++++ b/src/gasket_page_table.c
+@@ -54,8 +54,12 @@
+ #include <linux/vmalloc.h>
+
+ #if __has_include(<linux/dma-buf.h>)
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 13, 0)
++MODULE_IMPORT_NS("DMA_BUF");
++#else
+ MODULE_IMPORT_NS(DMA_BUF);
+ #endif
++#endif
+
+ #include "gasket_constants.h"
+ #include "gasket_core.h"

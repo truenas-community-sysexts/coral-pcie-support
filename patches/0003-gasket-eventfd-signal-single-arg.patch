@@ -1,0 +1,34 @@
+From: TrueNAS Community Sysexts <community-sysexts@truenas.org>
+Subject: [PATCH 3/4] gasket: version guard for eventfd_signal single-arg form
+
+Kernel >= 6.8 changed eventfd_signal() to accept a single argument. Add
+a version guard so the driver builds on both old and new kernels.
+
+If the upstream google/gasket-driver repo already contains this fix,
+apply-patches.sh will skip this patch automatically.
+
+---
+ src/gasket_interrupt.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/src/gasket_interrupt.c b/src/gasket_interrupt.c
+index 531d94e..3f8339c 100644
+--- a/src/gasket_interrupt.c
++++ b/src/gasket_interrupt.c
+@@ -157,9 +157,13 @@ gasket_handle_interrupt(struct gasket_interrupt_data *interrupt_data,
+ 	trace_gasket_interrupt_event(interrupt_data->name, interrupt_index);
+ 	read_lock(&interrupt_data->eventfd_ctx_lock);
+ 	ctx = interrupt_data->eventfd_ctxs[interrupt_index];
+-	if (ctx)
+-		eventfd_signal(ctx, 1);
+-	read_unlock(&interrupt_data->eventfd_ctx_lock);
++        if (ctx)
++                #if LINUX_VERSION_CODE >= KERNEL_VERSION(6,8,0)
++                        eventfd_signal(ctx);
++                #else
++                        eventfd_signal(ctx, 1);
++                #endif
++        read_unlock(&interrupt_data->eventfd_ctx_lock);
+
+ 	++(interrupt_data->interrupt_counts[interrupt_index]);
+ }
