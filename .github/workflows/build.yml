@@ -1,0 +1,767 @@
+name: Build Coral Sysext
+
+on:
+  workflow_dispatch:
+    inputs:
+      truenas_version:
+        description: 'TrueNAS version (leave blank for latest tracked)'
+        required: false
+        default: ''
+      gasket_driver_version:
+        description: 'Gasket driver version (leave blank for latest tracked)'
+        required: false
+        default: ''
+      gasket_ref:
+        description: 'Gasket git ref to check out (leave blank for latest tracked)'
+        required: false
+        default: ''
+      train_name:
+        description: 'Train name (leave blank for latest tracked)'
+        required: false
+        default: ''
+      runner:
+        description: 'GitHub Actions runner (leave blank to auto-resolve from TrueNAS release)'
+        required: false
+        default: ''
+      mark_latest:
+        description: 'Mark this release as Latest on GitHub'
+        required: false
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+        default: 'true'
+
+  workflow_call:
+    inputs:
+      truenas_version:
+        type: string
+        required: true
+      gasket_driver_version:
+        type: string
+        required: true
+      gasket_ref:
+        type: string
+        required: true
+      train_name:
+        type: string
+        required: true
+      runner:
+        type: string
+        required: false
+        default: ''
+      mark_latest:
+        type: string
+        required: false
+        default: 'false'
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: build-release
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash -euo pipefail {0}
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      truenas_version: ${{ steps.params.outputs.truenas_version }}
+      gasket_driver_version: ${{ steps.params.outputs.gasket_driver_version }}
+      gasket_ref: ${{ steps.params.outputs.gasket_ref }}
+      train_name: ${{ steps.params.outputs.train_name }}
+      runner: ${{ steps.params.outputs.runner }}
+      mark_latest: ${{ steps.params.outputs.mark_latest }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            .github/tracked-versions.json
+            .github/scripts/resolve-runner.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Resolve build parameters
+        id: params
+        env:
+          INPUT_TRUENAS_VERSION: ${{ inputs.truenas_version }}
+          INPUT_GASKET_DRIVER_VERSION: ${{ inputs.gasket_driver_version }}
+          INPUT_GASKET_REF: ${{ inputs.gasket_ref }}
+          INPUT_TRAIN_NAME: ${{ inputs.train_name }}
+          INPUT_RUNNER: ${{ inputs.runner }}
+          INPUT_MARK_LATEST: ${{ inputs.mark_latest }}
+        run: |
+          set -euo pipefail
+
+          TRACKED=$(python3 -c "
+          import json
+          with open('.github/tracked-versions.json') as f:
+              d = json.load(f)
+          print(d['truenas']['version'])
+          print(d['truenas']['train'])
+          print(d['gasket']['driver'])
+          print(d['gasket']['ref'])
+          ")
+          TRACKED_VERSION=$(sed -n '1p' <<< "$TRACKED")
+          TRACKED_TRAIN=$(sed -n '2p' <<< "$TRACKED")
+          TRACKED_GASKET=$(sed -n '3p' <<< "$TRACKED")
+          TRACKED_REF=$(sed -n '4p' <<< "$TRACKED")
+
+          VERSION="${INPUT_TRUENAS_VERSION:-$TRACKED_VERSION}"
+          TRAIN="${INPUT_TRAIN_NAME:-$TRACKED_TRAIN}"
+          GASKET="${INPUT_GASKET_DRIVER_VERSION:-$TRACKED_GASKET}"
+          REF="${INPUT_GASKET_REF:-$TRACKED_REF}"
+          RUNNER="${INPUT_RUNNER}"
+          MARK_LATEST="${INPUT_MARK_LATEST:-true}"
+
+          if [ -z "$RUNNER" ]; then
+            RUNNER=$(.github/scripts/resolve-runner.sh "$TRAIN" "$VERSION")
+          fi
+
+          {
+            echo "truenas_version=${VERSION}"
+            echo "gasket_driver_version=${GASKET}"
+            echo "gasket_ref=${REF}"
+            echo "train_name=${TRAIN}"
+            echo "runner=${RUNNER}"
+            echo "mark_latest=${MARK_LATEST}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Resolved build parameters:"
+          echo "  truenas_version=${VERSION}"
+          echo "  gasket_driver_version=${GASKET}"
+          echo "  gasket_ref=${REF}"
+          echo "  train_name=${TRAIN}"
+          echo "  runner=${RUNNER}"
+          echo "  mark_latest=${MARK_LATEST}"
+
+  build:
+    needs: resolve
+    runs-on: ${{ needs.resolve.outputs.runner }}
+    timeout-minutes: 90
+    outputs:
+      run_number: ${{ steps.build_id.outputs.run_number }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            libelf-dev \
+            squashfs-tools \
+            zstd \
+            kmod \
+            curl
+
+      - name: Compute build identifier
+        id: build_id
+        # Burned into the release tag as -r<run> so every invocation gets a
+        # unique tag and nothing collides with GitHub's immutable-release
+        # tag-burn. github.run_number is monotonic per workflow, so it also
+        # covers the same-commit re-dispatch case (manual retry after a
+        # transient failure, fresh build after a deleted release) where a SHA
+        # alone wouldn't change. Short and human-readable. Exposed as a step
+        # output (not $GITHUB_ENV) so workflow expressions can reference it
+        # statically; run blocks that need the value as a shell var get it
+        # through the step's env: block.
+        run: |
+          echo "run_number=${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      # -- Obtain TrueNAS kernel headers from the release ISO --
+      - name: Restore cached TrueNAS ISO
+        id: iso-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: /tmp/truenas.iso
+          key: truenas-iso-${{ needs.resolve.outputs.truenas_version }}
+
+      - name: Download TrueNAS ISO
+        if: steps.iso-cache.outputs.cache-hit != 'true'
+        run: |
+          TRAIN="TrueNAS-SCALE-${{ needs.resolve.outputs.train_name }}"
+          VERSION="${{ needs.resolve.outputs.truenas_version }}"
+          ISO_URL="https://download.truenas.com/${TRAIN}/${VERSION}/TrueNAS-SCALE-${VERSION}.iso"
+          SHA_URL="${ISO_URL}.sha256"
+          echo "Downloading: ${ISO_URL}"
+          curl -fSL "$ISO_URL" -o /tmp/truenas.iso
+          ls -lh /tmp/truenas.iso
+
+          echo "Verifying ISO checksum..."
+          curl -fSL "$SHA_URL" -o /tmp/truenas.iso.sha256
+          EXPECTED=$(awk '{print $1}' /tmp/truenas.iso.sha256)
+          ACTUAL=$(sha256sum /tmp/truenas.iso | awk '{print $1}')
+          if [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "::error title=iso-checksum::SHA256 mismatch. Expected: ${EXPECTED}, got: ${ACTUAL}"
+            exit 1
+          fi
+          echo "ISO checksum verified: ${ACTUAL}"
+
+      - name: Save TrueNAS ISO to cache
+        if: steps.iso-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: /tmp/truenas.iso
+          key: truenas-iso-${{ needs.resolve.outputs.truenas_version }}
+
+      - name: Restore cached kernel headers
+        id: headers-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: /tmp/kernel-headers
+          key: kernel-headers-v3-${{ needs.resolve.outputs.truenas_version }}
+
+      - name: Extract kernel headers from TrueNAS ISO
+        if: steps.headers-cache.outputs.cache-hit != 'true'
+        run: |
+          # TrueNAS ISO structure:
+          #   /live/filesystem.squashfs  -- installer-only environment (NO kernel headers)
+          #   /TrueNAS-SCALE.update      -- outer squashfs containing:
+          #     /rootfs.squashfs           -- full rootfs with headers at /usr/src/linux-headers-*
+          #
+          # We must extract the nested rootfs.squashfs from inside the .update file.
+
+          sudo mkdir -p /tmp/iso
+          sudo mount -o loop /tmp/truenas.iso /tmp/iso
+
+          echo "=== ISO contents ==="
+          ls -la /tmp/iso/
+
+          # --- Extract the real rootfs from TrueNAS-SCALE.update (nested squashfs) ---
+          UPDATE_FILE="/tmp/iso/TrueNAS-SCALE.update"
+          if [ -f "$UPDATE_FILE" ]; then
+            echo "Found TrueNAS-SCALE.update ($(du -h "$UPDATE_FILE" | cut -f1)), extracting rootfs.squashfs..."
+            sudo rm -rf /tmp/update-contents
+            sudo unsquashfs -d /tmp/update-contents "$UPDATE_FILE" rootfs.squashfs || {
+              echo "ERROR: Failed to extract rootfs.squashfs from .update file"
+              sudo umount /tmp/iso
+              exit 1
+            }
+
+            ROOTFS_SQUASHFS="/tmp/update-contents/rootfs.squashfs"
+            if [ ! -f "$ROOTFS_SQUASHFS" ]; then
+              echo "ERROR: rootfs.squashfs not found inside .update file"
+              echo "=== .update contents ==="
+              ls -la /tmp/update-contents/
+              sudo umount /tmp/iso
+              exit 1
+            fi
+
+            echo "Extracting kernel headers from rootfs.squashfs..."
+            sudo rm -rf /tmp/rootfs
+            # Extract only /usr/src and /lib/modules to save time and disk
+            sudo unsquashfs -d /tmp/rootfs "$ROOTFS_SQUASHFS" 'usr/src/linux-headers-*' 'lib/modules/*' || {
+              echo "WARNING: Selective extract failed, trying full extract..."
+              sudo rm -rf /tmp/rootfs
+              sudo unsquashfs -d /tmp/rootfs "$ROOTFS_SQUASHFS"
+            }
+          else
+            echo "No TrueNAS-SCALE.update found, falling back to live/filesystem.squashfs..."
+
+            # Fallback for older ISO layouts
+            SQUASHFS=""
+            for candidate in \
+              /tmp/iso/live/filesystem.squashfs \
+              /tmp/iso/rootfs.squashfs \
+              /tmp/iso/truenas.squashfs; do
+              if [ -f "$candidate" ]; then
+                SQUASHFS="$candidate"
+                break
+              fi
+            done
+
+            if [ -z "$SQUASHFS" ]; then
+              echo "ERROR: Could not find any squashfs in ISO"
+              find /tmp/iso -name "*.squashfs" -o -name "*.update" 2>/dev/null || true
+              sudo umount /tmp/iso
+              exit 1
+            fi
+
+            echo "Found squashfs: $SQUASHFS"
+            sudo mkdir -p /tmp/rootfs
+            sudo mount -o loop "$SQUASHFS" /tmp/rootfs
+          fi
+
+          # --- Find kernel headers ---
+          echo "=== /usr/src contents ==="
+          ls -la /tmp/rootfs/usr/src/ 2>/dev/null || echo "(empty or missing)"
+
+          # Select kernel headers: prefer production over debug
+          # TrueNAS provides headers like:
+          #   linux-headers-truenas-production-amd64  (non-versioned, preferred)
+          #   linux-headers-truenas-debug-amd64       (non-versioned, avoid)
+          #   linux-headers-6.6.x-production+truenas  (versioned, preferred)
+          #   linux-headers-6.6.x-debug+truenas       (versioned, avoid)
+          # We deliberately do NOT fall further back to "any headers
+          # including debug" -- if both selectors miss, the rootfs layout
+          # has changed and we want loud failure rather than building
+          # against headers we can't identify.
+          # shellcheck disable=SC2010 # ls|grep is fine: TrueNAS rootfs filenames are package-controlled (no spaces/newlines)
+          KVER=$(ls /tmp/rootfs/usr/src/ 2>/dev/null | grep 'linux-headers-' | sed 's/linux-headers-//' | grep -i 'production' | head -1)
+          if [ -z "$KVER" ]; then
+            # Fall back to any non-debug headers
+            # shellcheck disable=SC2010
+            KVER=$(ls /tmp/rootfs/usr/src/ 2>/dev/null | grep 'linux-headers-' | sed 's/linux-headers-//' | grep -vi 'debug' | head -1)
+          fi
+
+          if [ -z "$KVER" ]; then
+            echo "::error title=kernel-headers::no production or non-debug headers found under /tmp/rootfs/usr/src/. The TrueNAS rootfs layout may have changed; investigate before relaxing the selector."
+            echo "=== Debug: /usr/src contents ==="
+            ls -la /tmp/rootfs/usr/src/ 2>/dev/null || true
+            echo "=== Debug: /lib/modules contents ==="
+            ls -la /tmp/rootfs/lib/modules/ 2>/dev/null || true
+            sudo umount /tmp/iso 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "Header package version: ${KVER}"
+
+          # Detect the REAL kernel version (what uname -r returns on the target).
+          # The header directory name (e.g. truenas-production-amd64) may differ
+          # from the actual kernel release string (e.g. 6.12.33-production+truenas).
+          REAL_KVER=""
+          # Method 1: kernel.release in headers (authoritative -- this is what
+          # the build system records as the kernel release string).
+          KREL_FILE="/tmp/rootfs/usr/src/linux-headers-${KVER}/include/config/kernel.release"
+          if [ -f "$KREL_FILE" ]; then
+            REAL_KVER=$(tr -d '[:space:]' < "$KREL_FILE")
+          fi
+          # Method 2: /lib/modules directory name (fallback when headers are
+          # split across packages and kernel.release isn't co-located).
+          # Mirror the production-preferred / non-debug selector used for
+          # KVER above: a rootfs that ships both kernels would otherwise
+          # let `head -1` pick `*-debug+truenas` (sorts before production)
+          # and we'd ship a sysext under the wrong /lib/modules/<kver>/.
+          if [ -z "$REAL_KVER" ]; then
+            # shellcheck disable=SC2010
+            REAL_KVER=$(ls /tmp/rootfs/lib/modules/ 2>/dev/null | grep -v '^\.' | grep -i 'production' | head -1)
+          fi
+          if [ -z "$REAL_KVER" ]; then
+            # shellcheck disable=SC2010
+            REAL_KVER=$(ls /tmp/rootfs/lib/modules/ 2>/dev/null | grep -v '^\.' | grep -vi 'debug' | head -1)
+          fi
+          # No fallback to $KVER: the header *package* name (e.g.
+          # truenas-production-amd64) is not a kernel release string, and
+          # using it puts modules at the wrong /lib/modules/<kver>/ path.
+          # Better to fail the build than ship a sysext that won't load.
+          if [ -z "$REAL_KVER" ]; then
+            echo "::error title=kernel-version::could not resolve real kernel version. Method 1 (${KREL_FILE}) and Method 2 (/tmp/rootfs/lib/modules/) both returned empty. The TrueNAS rootfs layout may have changed; investigate before bumping the runner or KVER detection." >&2
+            exit 1
+          fi
+          echo "Real kernel version: ${REAL_KVER}"
+
+          # Copy kernel headers to build directory
+          sudo mkdir -p /tmp/kernel-headers
+          sudo cp -a "/tmp/rootfs/usr/src/linux-headers-${KVER}" /tmp/kernel-headers/
+
+          # Save real kernel version for later steps
+          echo "$REAL_KVER" | sudo tee /tmp/kernel-headers/.real-kver
+
+          # Cleanup: /tmp/rootfs is a loop mount on the fallback path but an
+          # unsquashfs extraction on the primary path. Try umount first (no-op
+          # when it's a plain directory), then rm -rf to cover the extraction
+          # case. /tmp/update-contents is only created on the primary path.
+          sudo umount /tmp/rootfs 2>/dev/null || true
+          sudo rm -rf /tmp/rootfs /tmp/update-contents
+          sudo umount /tmp/iso 2>/dev/null || true
+
+          echo "Kernel headers extracted successfully"
+          ls -la /tmp/kernel-headers/
+
+      - name: Save kernel headers to cache
+        if: steps.headers-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: /tmp/kernel-headers
+          key: kernel-headers-v3-${{ needs.resolve.outputs.truenas_version }}
+
+      - name: Detect kernel version from cached headers
+        run: |
+          # Same selector pattern as the extract step: prefer production,
+          # fall back to non-debug, then fail loud rather than picking up
+          # debug headers (whose package name leaks into the module path
+          # and would ship a sysext we can't identify).
+          # shellcheck disable=SC2010 # ls|grep is fine: TrueNAS package-controlled filenames
+          KVER=$(ls /tmp/kernel-headers/ | grep 'linux-headers-' | sed 's/linux-headers-//' | grep -i 'production' | head -1)
+          if [ -z "$KVER" ]; then
+            # shellcheck disable=SC2010
+            KVER=$(ls /tmp/kernel-headers/ | grep 'linux-headers-' | sed 's/linux-headers-//' | grep -vi 'debug' | head -1)
+          fi
+          if [ -z "$KVER" ]; then
+            echo "::error title=kernel-headers::no production or non-debug headers found in cache /tmp/kernel-headers/. Cache may have been populated from a rootfs with a changed layout; bust the kernel-headers cache and re-run."
+            ls -la /tmp/kernel-headers/
+            exit 1
+          fi
+          echo "Header package version: ${KVER}"
+          echo "KVER=${KVER}" >> "$GITHUB_ENV"
+
+          # Read real kernel version (what uname -r returns on the target).
+          # Do NOT fall back to KVER: the header package name (e.g.
+          # truenas-production-amd64) is not a kernel release string, and
+          # using it puts modules at the wrong /lib/modules/<kver>/ path.
+          # A missing .real-kver means the cache is corrupted or pre-dates
+          # the v3 key scheme -- fail loud so the operator busts the cache.
+          REAL_KVER=""
+          if [ -f "/tmp/kernel-headers/.real-kver" ]; then
+            REAL_KVER=$(tr -d '[:space:]' < /tmp/kernel-headers/.real-kver)
+          fi
+          if [ -z "$REAL_KVER" ]; then
+            echo "::error title=kernel-version::.real-kver missing or empty in cached kernel headers. Bust the kernel-headers cache (key: kernel-headers-v3-${{ needs.resolve.outputs.truenas_version }}) and re-run."
+            exit 1
+          fi
+          echo "Real kernel version: ${REAL_KVER}"
+          echo "REAL_KVER=${REAL_KVER}" >> "$GITHUB_ENV"
+
+          # Detect the GCC major version the kernel was compiled with.
+          # Prefer include/config/cc-version-text (plain-text, one line);
+          # fall back to include/generated/compile.h (LINUX_COMPILER macro).
+          # Handles both "gcc-12 (Debian ...)" and "gcc (Debian 12.2.0-14) 12.2.0".
+          HEADER_DIR="/tmp/kernel-headers/linux-headers-${KVER}"
+          GCC_VER=""
+          extract_gcc_ver() {
+            local file="$1"
+            # Try hyphenated form first: "gcc-12"
+            local ver
+            ver=$(grep -oP 'gcc-\K[0-9]+' "$file" 2>/dev/null | head -1)
+            if [ -n "$ver" ]; then printf '%s' "$ver"; return; fi
+            # Try "gcc (Toolchain X.Y.Z) X.Y.Z" form: extract major from final version
+            ver=$(grep -oP 'gcc\s+\(.*?\)\s+\K[0-9]+' "$file" 2>/dev/null | head -1)
+            if [ -n "$ver" ]; then printf '%s' "$ver"; return; fi
+          }
+          if [ -f "${HEADER_DIR}/include/config/cc-version-text" ]; then
+            GCC_VER=$(extract_gcc_ver "${HEADER_DIR}/include/config/cc-version-text")
+          fi
+          if [ -z "$GCC_VER" ] && [ -f "${HEADER_DIR}/include/generated/compile.h" ]; then
+            GCC_VER=$(extract_gcc_ver "${HEADER_DIR}/include/generated/compile.h")
+          fi
+          if [ -z "$GCC_VER" ]; then
+            echo "::warning title=gcc-version::could not detect GCC version from kernel headers, defaulting to gcc-12"
+            GCC_VER="12"
+          fi
+          echo "Kernel GCC version: gcc-${GCC_VER}"
+          echo "KERNEL_GCC=gcc-${GCC_VER}" >> "$GITHUB_ENV"
+
+      # -- Clone and build gasket/apex kernel modules --
+      - name: Clone gasket-driver
+        run: |
+          git clone https://github.com/google/gasket-driver.git /tmp/gasket-driver
+          cd /tmp/gasket-driver
+          git checkout "${{ needs.resolve.outputs.gasket_ref }}"
+          echo "Checked out gasket-driver:"
+          git log --oneline -1
+
+      - name: Apply kernel compatibility patches
+        run: |
+          bash "${GITHUB_WORKSPACE}/patches/apply-patches.sh" /tmp/gasket-driver
+
+      - name: Install kernel-matching GCC
+        run: |
+          if ! command -v "$KERNEL_GCC" &>/dev/null; then
+            sudo apt-get install -y "$KERNEL_GCC"
+          fi
+          echo "Using compiler: $("$KERNEL_GCC" --version | head -1)"
+
+      - name: Build gasket and apex kernel modules
+        run: |
+          cd /tmp/gasket-driver/src
+          KERNEL_DIR="/tmp/kernel-headers/linux-headers-${KVER}"
+          echo "Building gasket.ko and apex.ko against kernel ${KVER} with ${KERNEL_GCC}..."
+          make CC="$KERNEL_GCC" -C "$KERNEL_DIR" M="$(pwd)" modules
+          echo "=== Module info ==="
+          modinfo gasket.ko
+          modinfo apex.ko
+          ls -lh gasket.ko apex.ko
+
+      # -- Assemble sysext --
+      - name: Assemble sysext filesystem tree
+        run: |
+          SYSEXT_ROOT="/tmp/coral-sysext"
+          mkdir -p "${SYSEXT_ROOT}"
+
+          # extension-release
+          mkdir -p "${SYSEXT_ROOT}/usr/lib/extension-release.d"
+          echo "ID=_any" > "${SYSEXT_ROOT}/usr/lib/extension-release.d/extension-release.coral"
+
+          # Kernel modules (both gasket and apex)
+          # Use REAL_KVER (e.g. 6.12.33-production+truenas) not KVER (header dir name)
+          MOD_DIR="${SYSEXT_ROOT}/usr/lib/modules/${REAL_KVER}/extra"
+          mkdir -p "$MOD_DIR"
+          cp /tmp/gasket-driver/src/gasket.ko "$MOD_DIR/"
+          cp /tmp/gasket-driver/src/apex.ko "$MOD_DIR/"
+
+          # systemd service
+          mkdir -p "${SYSEXT_ROOT}/usr/lib/systemd/system/multi-user.target.wants"
+          cp sysext/usr/lib/systemd/system/coral-load.service "${SYSEXT_ROOT}/usr/lib/systemd/system/"
+          ln -sf ../coral-load.service "${SYSEXT_ROOT}/usr/lib/systemd/system/multi-user.target.wants/coral-load.service"
+
+          # udev rules
+          mkdir -p "${SYSEXT_ROOT}/usr/lib/udev/rules.d"
+          cp sysext/usr/lib/udev/rules.d/51-coral-udev.rules "${SYSEXT_ROOT}/usr/lib/udev/rules.d/"
+
+          # preinit script (bundled for install.sh to extract)
+          mkdir -p "${SYSEXT_ROOT}/usr/lib/coral"
+          cp scripts/coral-preinit.sh "${SYSEXT_ROOT}/usr/lib/coral/coral-preinit.sh"
+          chmod +x "${SYSEXT_ROOT}/usr/lib/coral/coral-preinit.sh"
+
+          # NOTE: No depmod (would overwrite base system's modules.dep via overlayfs)
+          # NOTE: No firmware (Coral PCIe doesn't need firmware injection)
+          # NOTE: No userspace library or CLI tool
+
+          echo "=== Sysext tree ==="
+          find "${SYSEXT_ROOT}" -type f -o -type l | sort
+
+      - name: Create coral.raw squashfs
+        run: |
+          # -all-root: the runner builds the tree as a non-root user, but
+          # the sysext is exec'd as root on the target. Own files as root
+          # rather than carrying the runner's uid/gid into the squashfs.
+          mksquashfs /tmp/coral-sysext coral.raw -noappend -comp zstd -all-root
+          echo "=== coral.raw ==="
+          ls -lh coral.raw
+          echo ""
+          echo "=== Contents ==="
+          unsquashfs -l coral.raw | head -40
+
+      - name: Smoke-test coral.raw contents
+        run: |
+          # Open the produced squashfs and verify that the assembly step
+          # placed every component the release advertises. Catches silent
+          # mksquashfs flag drift, kernel-path drift, missing preinit
+          # bundling, etc.
+          set -e
+          SMOKE_TMP="$(mktemp -d)"
+          trap 'rm -rf "$SMOKE_TMP"' EXIT
+
+          unsquashfs -d "${SMOKE_TMP}/extract" coral.raw
+
+          fail=0
+          require_file() {
+            local rel="$1"
+            local path="${SMOKE_TMP}/extract/${rel}"
+            if [ ! -e "$path" ]; then
+              echo "::error title=smoke-test::missing in coral.raw: ${rel}"
+              fail=1
+              return
+            fi
+            echo "  ok: ${rel}"
+          }
+
+          echo "=== smoke-test: required paths ==="
+          require_file "usr/lib/extension-release.d/extension-release.coral"
+          EXT_REL="${SMOKE_TMP}/extract/usr/lib/extension-release.d/extension-release.coral"
+          if [ -f "$EXT_REL" ] && ! grep -qx 'ID=_any' "$EXT_REL"; then
+            echo "::error title=smoke-test::extension-release.coral does not contain 'ID=_any'; got: $(cat "$EXT_REL")"
+            fail=1
+          fi
+          require_file "usr/lib/modules/${REAL_KVER}/extra/gasket.ko"
+          require_file "usr/lib/modules/${REAL_KVER}/extra/apex.ko"
+          require_file "usr/lib/systemd/system/coral-load.service"
+          require_file "usr/lib/udev/rules.d/51-coral-udev.rules"
+          require_file "usr/lib/coral/coral-preinit.sh"
+
+          # vermagic sanity: the kernel modules' vermagic must reference REAL_KVER.
+          # If we shipped modules built for the wrong kernel, modprobe-style
+          # version checks would refuse to load them. Catch it before publish.
+          for ko_name in gasket.ko apex.ko; do
+            KO_PATH="${SMOKE_TMP}/extract/usr/lib/modules/${REAL_KVER}/extra/${ko_name}"
+            if [ -f "$KO_PATH" ]; then
+              VERMAGIC=$(modinfo -F vermagic "$KO_PATH" 2>/dev/null || true)
+              if [ -z "$VERMAGIC" ]; then
+                echo "::error title=smoke-test::could not read vermagic from ${ko_name}"
+                fail=1
+              elif ! printf '%s' "$VERMAGIC" | grep -qF "$REAL_KVER"; then
+                echo "::error title=smoke-test::${ko_name} vermagic does not reference REAL_KVER (${REAL_KVER}); got: ${VERMAGIC}"
+                fail=1
+              else
+                echo "  ok: ${ko_name} vermagic references ${REAL_KVER}"
+              fi
+            fi
+          done
+
+          if [ "$fail" -ne 0 ]; then
+            echo "::error title=smoke-test::coral.raw is missing required components, refusing to publish"
+            exit 1
+          fi
+          echo "smoke-test OK"
+
+      - name: Generate checksums
+        run: |
+          sha256sum coral.raw > coral.raw.sha256
+          cat coral.raw.sha256
+
+      - name: Render release notes
+        env:
+          TRUENAS_VERSION: ${{ needs.resolve.outputs.truenas_version }}
+          TRAIN_NAME: ${{ needs.resolve.outputs.train_name }}
+          GASKET_DRIVER: ${{ needs.resolve.outputs.gasket_driver_version }}
+          GASKET_REF: ${{ needs.resolve.outputs.gasket_ref }}
+          RUNNER_IMAGE: ${{ needs.resolve.outputs.runner }}
+          BUILD_SHA: ${{ github.sha }}
+          RUN_NUMBER: ${{ steps.build_id.outputs.run_number }}
+          REPO: ${{ github.repository }}
+        run: |
+          envsubst '${TRUENAS_VERSION} ${TRAIN_NAME} ${GASKET_DRIVER} ${GASKET_REF} ${REAL_KVER} ${RUNNER_IMAGE} ${BUILD_SHA} ${REPO} ${RUN_NUMBER}' > release-notes.md <<'RELEASE_NOTES'
+          ## Coral PCIe TPU Sysext for TrueNAS SCALE ${TRUENAS_VERSION} (${TRAIN_NAME})
+
+          | Field | Value |
+          | --- | --- |
+          | Gasket driver | `${GASKET_DRIVER}` |
+          | Gasket ref | [`${GASKET_REF}`](https://github.com/google/gasket-driver/tree/${GASKET_REF}) |
+          | Target kernel | `${REAL_KVER}` |
+          | Built on | `${RUNNER_IMAGE}` |
+          | Source commit | [`${BUILD_SHA}`](https://github.com/${REPO}/commit/${BUILD_SHA}) |
+
+          **Target Device:** Google Coral PCIe TPU (M.2 / mini-PCIe). For USB Coral accelerators, no kernel module is needed.
+
+          ### Included Components
+          - `gasket.ko` - Gasket (Google ASIC Software, Kernel Extensions, and Tools) kernel module
+          - `apex.ko` - Apex PCIe kernel module for Coral TPU (built against kernel `${REAL_KVER}`)
+          - `coral-load.service` - Systemd unit that loads the modules on boot
+          - `coral-preinit.sh` - TrueNAS PREINIT script bundled inside the sysext
+          - `51-coral-udev.rules` - Udev rules for `/dev/apex*` permissions
+
+          ### Install
+          ```bash
+          curl -fsSL https://github.com/${REPO}/releases/download/v${TRUENAS_VERSION}-gasket${GASKET_DRIVER}-r${RUN_NUMBER}/install.sh | sudo bash
+          ```
+
+          ### Verify
+          ```bash
+          sudo ./install.sh --check
+          ls /dev/apex*
+          ```
+
+          ### Uninstall
+          ```bash
+          curl -fsSL https://github.com/${REPO}/releases/download/v${TRUENAS_VERSION}-gasket${GASKET_DRIVER}-r${RUN_NUMBER}/uninstall.sh | sudo bash
+          ```
+
+          ### Checksums
+          See `coral.raw.sha256`.
+
+          ### Source
+          Kernel modules built from [google/gasket-driver](https://github.com/google/gasket-driver) at ref `${GASKET_REF}`.
+          RELEASE_NOTES
+
+          echo "=== Rendered release notes ==="
+          cat release-notes.md
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: coral-sysext-${{ needs.resolve.outputs.truenas_version }}-gasket-${{ needs.resolve.outputs.gasket_driver_version }}
+          path: |
+            coral.raw
+            coral.raw.sha256
+            release-notes.md
+
+  release:
+    needs: [resolve, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: scripts
+          sparse-checkout-cone-mode: true
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: coral-sysext-${{ needs.resolve.outputs.truenas_version }}-gasket-${{ needs.resolve.outputs.gasket_driver_version }}
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ needs.resolve.outputs.truenas_version }}-gasket${{ needs.resolve.outputs.gasket_driver_version }}-r${{ needs.build.outputs.run_number }}
+          name: "TrueNAS ${{ needs.resolve.outputs.truenas_version }} - Gasket ${{ needs.resolve.outputs.gasket_driver_version }} (r${{ needs.build.outputs.run_number }})"
+          body_path: release-notes.md
+          files: |
+            coral.raw
+            coral.raw.sha256
+            scripts/coral-lib.sh
+            scripts/install.sh
+            scripts/restore.sh
+            scripts/uninstall.sh
+          draft: false
+          prerelease: false
+          make_latest: ${{ needs.resolve.outputs.mark_latest }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create hardware-test issue for auto-build
+        if: needs.resolve.outputs.mark_latest == 'false'
+        uses: actions/github-script@v9
+        env:
+          TRUENAS_VERSION: ${{ needs.resolve.outputs.truenas_version }}
+          GASKET_DRIVER: ${{ needs.resolve.outputs.gasket_driver_version }}
+          RUN_NUMBER: ${{ needs.build.outputs.run_number }}
+        with:
+          script: |
+            const tag = `v${process.env.TRUENAS_VERSION}-gasket${process.env.GASKET_DRIVER}-r${process.env.RUN_NUMBER}`;
+            const title = `Hardware test: TrueNAS ${process.env.TRUENAS_VERSION} / Gasket ${process.env.GASKET_DRIVER} (${tag})`;
+            const releaseUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/releases/tag/${tag}`;
+
+            // Ensure the label exists (idempotent, no-ops if already present).
+            try {
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'hardware-test',
+                color: 'FBCA04',
+                description: 'Auto-build awaiting hardware verification',
+              });
+              console.log('Created hardware-test label');
+            } catch (e) {
+              if (e.status === 422) {
+                console.log('hardware-test label already exists');
+              } else {
+                throw e;
+              }
+            }
+
+            // Skip if an open issue already exists for this release tag.
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'hardware-test',
+              per_page: 100,
+            });
+            if (existing.data.some(i => i.title.includes(tag))) {
+              console.log(`Open hardware-test issue already exists for ${tag}, skipping`);
+              return;
+            }
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              labels: ['hardware-test'],
+              body: [
+                `An auto-build published a new release that needs hardware verification before being promoted to **Latest**.`,
+                ``,
+                `**Release:** [${tag}](${releaseUrl})`,
+                `**TrueNAS:** ${process.env.TRUENAS_VERSION}`,
+                `**Gasket:** ${process.env.GASKET_DRIVER}`,
+                ``,
+                `### Test checklist`,
+                `- [ ] Download and install on a TrueNAS system with a Coral PCIe TPU`,
+                `- [ ] Confirm \`/dev/apex_0\` exists after module load`,
+                `- [ ] Confirm Frigate detects the Coral TPU`,
+                `- [ ] Reboot and confirm the PREINIT script restores the sysext`,
+                ``,
+                `### Promote`,
+                `Once verified, go to the [release page](${releaseUrl}) and click **Set as latest**.`,
+                `Then close this issue.`,
+              ].join('\n'),
+            });
+            console.log(`Created hardware-test issue for ${tag}`);
