@@ -7,7 +7,10 @@ A systemd-sysext package that adds [Google Coral](https://coral.ai/) PCIe TPU su
 | Doc | Contents |
 | --- | --- |
 | [Quick Start](#quick-start) | Install, verify, uninstall |
+| [docs/install.md](docs/install.md) | Install options, persistence, scripts reference |
+| [docs/build.md](docs/build.md) | Build process, custom builds, automated updates |
 | [docs/architecture.md](docs/architecture.md) | Deep technical reference: sysext structure, build pipeline, read-only constraints |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Kernel mismatch recovery after TrueNAS updates |
 
 ## What's Included
 
@@ -104,15 +107,18 @@ detectors:
 
 ## Important Notes
 
-- The kernel module must match the exact TrueNAS kernel version. If you update TrueNAS, you need a matching sysext build.
+- The kernel module must match the exact TrueNAS kernel version. If you update TrueNAS, you need a matching sysext build. See [troubleshooting](docs/troubleshooting.md) for recovery steps.
 - The unsigned kernel module may require disabling Secure Boot.
 - No firmware download is needed, unlike some other accelerator sysexts. The Coral PCIe TPU operates with just the gasket and apex kernel modules.
 
 ## License
 
-GPL-2.0 - see [LICENSE](LICENSE).
+This project uses two licenses:
 
-The gasket-driver source ([google/gasket-driver](https://github.com/google/gasket-driver)) is licensed under GPL-2.0.
+- **MIT** ([LICENSE](LICENSE)): scripts, workflows, systemd units, udev rules, and all other original code
+- **GPL-2.0** ([patches/LICENSE](patches/LICENSE)): the `patches/` directory, which contains modifications to GPL-2.0 licensed [google/gasket-driver](https://github.com/google/gasket-driver) source code
+
+The compiled kernel modules (gasket.ko, apex.ko) are GPL-2.0 as build artifacts derived from gasket-driver.
 
 ## Credits
 

@@ -462,7 +462,7 @@ print(matches[0]['tag_name'], end='')
 
     # Extract gasket driver version from the tag for informational purposes.
     # Tags look like: v25.10.3.1-gasket1.0-18-r23
-    GASKET_VERSION=$(echo "$RELEASE_TAG" | sed -n 's/.*gasket\([0-9][0-9.]*[0-9]\).*/\1/p')
+    GASKET_VERSION=$(echo "$RELEASE_TAG" | sed -n 's/.*gasket\([0-9][0-9._-]*[0-9]\).*/\1/p')
     if [ -z "$GASKET_VERSION" ]; then
         echo "ERROR: Could not parse gasket driver version from release tag '${RELEASE_TAG}'." >&2
         echo "  Expected format: v<truenas>-gasket<driver>-r<run>" >&2

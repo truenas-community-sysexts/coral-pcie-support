@@ -1,1 +1,8 @@
+# Google Coral PCIe TPU - allow non-root access to /dev/apex*
+#
+# MODE 0666 grants world read/write so Docker containers (which typically run
+# as non-root) can access the device without extra group configuration.
+# Trade-off: any local user can talk to the accelerator. For a locked-down
+# alternative, use GROUP="video" with MODE="0660" and add your container user
+# to the video group.
 SUBSYSTEM=="apex", MODE="0666"

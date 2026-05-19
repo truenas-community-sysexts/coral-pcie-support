@@ -15,7 +15,7 @@
 # When TrueNAS rebases onto a newer Debian, the only change required here
 # is one new entry in the case statement below. The auto-bump workflows
 # will fail loud (::error::) on the first run after a rebase until the
-# entry is added — that is the intended signal.
+# entry is added; that is the intended signal.
 #
 # Usage:
 #   resolve-runner.sh <train> <version>
