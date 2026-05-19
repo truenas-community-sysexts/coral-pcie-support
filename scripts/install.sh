@@ -461,7 +461,7 @@ print(matches[0]['tag_name'], end='')
     echo "Found release: ${RELEASE_TAG}"
 
     # Extract gasket driver version from the tag for informational purposes.
-    # Tags look like: v25.10.3.1-gasket1.0-18-r23
+    # Tags look like: v25.10.3.1-gasket1.0-18.4-r1
     GASKET_VERSION=$(echo "$RELEASE_TAG" | sed -n 's/.*gasket\([0-9][0-9._-]*[0-9]\).*/\1/p')
     if [ -z "$GASKET_VERSION" ]; then
         echo "ERROR: Could not parse gasket driver version from release tag '${RELEASE_TAG}'." >&2
@@ -502,7 +502,7 @@ if ! command -v unsquashfs &>/dev/null; then
     exit 1
 fi
 
-unsquashfs -d "${WORK_DIR}/coral-sysext-unpack" "${WORK_DIR}/coral.raw"
+unsquashfs -q -d "${WORK_DIR}/coral-sysext-unpack" "${WORK_DIR}/coral.raw" usr/lib/coral/coral-preinit.sh
 
 BUNDLED_PREINIT="${WORK_DIR}/coral-sysext-unpack/usr/lib/coral/coral-preinit.sh"
 if [ ! -f "$BUNDLED_PREINIT" ]; then
