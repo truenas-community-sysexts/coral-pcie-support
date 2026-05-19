@@ -113,19 +113,13 @@ detectors:
 
 ## License
 
-This project uses two licenses:
+**MIT** ([LICENSE](LICENSE)) for all code in this repository (scripts, workflows, systemd units, udev rules).
 
-- **MIT** ([LICENSE](LICENSE)): scripts, workflows, systemd units, udev rules, and all other original code
-- **GPL-2.0** ([patches/LICENSE](patches/LICENSE)): the `patches/` directory, which contains modifications to GPL-2.0 licensed [google/gasket-driver](https://github.com/google/gasket-driver) source code
-
-The compiled kernel modules (gasket.ko, apex.ko) are GPL-2.0 as build artifacts derived from gasket-driver.
+The compiled kernel modules (gasket.ko, apex.ko) are GPL-2.0 as build artifacts derived from [feranick/gasket-driver](https://github.com/feranick/gasket-driver).
 
 ## Credits
 
-- [google/gasket-driver](https://github.com/google/gasket-driver) - upstream kernel module source
-- [feranick/gasket-driver](https://github.com/feranick/gasket-driver) - kernel compatibility patches reference
+- [truenas-community-sysexts/hailo8-support](https://github.com/truenas-community-sysexts/hailo8-support) - project structure, scripts, and CI workflows adapted from scyto's Hailo-8 sysext
+- [feranick/gasket-driver](https://github.com/feranick/gasket-driver) - actively maintained gasket-driver fork with kernel compatibility fixes (build source)
+- [google/gasket-driver](https://github.com/google/gasket-driver) - original kernel module source (archived)
 - [cbetti/truenas-coral-pcie-driver-helper](https://github.com/cbetti/truenas-coral-pcie-driver-helper) - reference implementation
-
-## About This Project
-
-This project was developed with the assistance of AI (Claude by Anthropic) via Claude Code. A human provided direction, reviewed outputs, and made decisions, but the implementation was AI-assisted.

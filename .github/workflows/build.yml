@@ -74,6 +74,7 @@ jobs:
       truenas_version: ${{ steps.params.outputs.truenas_version }}
       gasket_driver_version: ${{ steps.params.outputs.gasket_driver_version }}
       gasket_ref: ${{ steps.params.outputs.gasket_ref }}
+      gasket_repo: ${{ steps.params.outputs.gasket_repo }}
       train_name: ${{ steps.params.outputs.train_name }}
       runner: ${{ steps.params.outputs.runner }}
       mark_latest: ${{ steps.params.outputs.mark_latest }}
@@ -106,11 +107,13 @@ jobs:
           print(d['truenas']['train'])
           print(d['gasket']['driver'])
           print(d['gasket']['ref'])
+          print(d['gasket'].get('repo', 'feranick/gasket-driver'))
           ")
           TRACKED_VERSION=$(sed -n '1p' <<< "$TRACKED")
           TRACKED_TRAIN=$(sed -n '2p' <<< "$TRACKED")
           TRACKED_GASKET=$(sed -n '3p' <<< "$TRACKED")
           TRACKED_REF=$(sed -n '4p' <<< "$TRACKED")
+          TRACKED_REPO=$(sed -n '5p' <<< "$TRACKED")
 
           VERSION="${INPUT_TRUENAS_VERSION:-$TRACKED_VERSION}"
           TRAIN="${INPUT_TRAIN_NAME:-$TRACKED_TRAIN}"
@@ -123,10 +126,13 @@ jobs:
             RUNNER=$(.github/scripts/resolve-runner.sh "$TRAIN" "$VERSION")
           fi
 
+          GASKET_REPO="${TRACKED_REPO}"
+
           {
             echo "truenas_version=${VERSION}"
             echo "gasket_driver_version=${GASKET}"
             echo "gasket_ref=${REF}"
+            echo "gasket_repo=${GASKET_REPO}"
             echo "train_name=${TRAIN}"
             echo "runner=${RUNNER}"
             echo "mark_latest=${MARK_LATEST}"
@@ -136,6 +142,7 @@ jobs:
           echo "  truenas_version=${VERSION}"
           echo "  gasket_driver_version=${GASKET}"
           echo "  gasket_ref=${REF}"
+          echo "  gasket_repo=${GASKET_REPO}"
           echo "  train_name=${TRAIN}"
           echo "  runner=${RUNNER}"
           echo "  mark_latest=${MARK_LATEST}"
@@ -452,15 +459,13 @@ jobs:
       # -- Clone and build gasket/apex kernel modules --
       - name: Clone gasket-driver
         run: |
-          git clone https://github.com/google/gasket-driver.git /tmp/gasket-driver
+          GASKET_REPO="${{ needs.resolve.outputs.gasket_repo }}"
+          echo "Cloning from: ${GASKET_REPO}"
+          git clone "https://github.com/${GASKET_REPO}.git" /tmp/gasket-driver
           cd /tmp/gasket-driver
           git checkout "${{ needs.resolve.outputs.gasket_ref }}"
           echo "Checked out gasket-driver:"
           git log --oneline -1
-
-      - name: Apply kernel compatibility patches
-        run: |
-          bash "${GITHUB_WORKSPACE}/patches/apply-patches.sh" /tmp/gasket-driver
 
       - name: Install kernel-matching GCC
         run: |
@@ -603,18 +608,19 @@ jobs:
           TRAIN_NAME: ${{ needs.resolve.outputs.train_name }}
           GASKET_DRIVER: ${{ needs.resolve.outputs.gasket_driver_version }}
           GASKET_REF: ${{ needs.resolve.outputs.gasket_ref }}
+          GASKET_REPO: ${{ needs.resolve.outputs.gasket_repo }}
           RUNNER_IMAGE: ${{ needs.resolve.outputs.runner }}
           BUILD_SHA: ${{ github.sha }}
           RUN_NUMBER: ${{ steps.build_id.outputs.run_number }}
           REPO: ${{ github.repository }}
         run: |
-          envsubst '${TRUENAS_VERSION} ${TRAIN_NAME} ${GASKET_DRIVER} ${GASKET_REF} ${REAL_KVER} ${RUNNER_IMAGE} ${BUILD_SHA} ${REPO} ${RUN_NUMBER}' > release-notes.md <<'RELEASE_NOTES'
+          envsubst '${TRUENAS_VERSION} ${TRAIN_NAME} ${GASKET_DRIVER} ${GASKET_REF} ${GASKET_REPO} ${REAL_KVER} ${RUNNER_IMAGE} ${BUILD_SHA} ${REPO} ${RUN_NUMBER}' > release-notes.md <<'RELEASE_NOTES'
           ## Coral PCIe TPU Sysext for TrueNAS SCALE ${TRUENAS_VERSION} (${TRAIN_NAME})
 
           | Field | Value |
           | --- | --- |
           | Gasket driver | `${GASKET_DRIVER}` |
-          | Gasket ref | [`${GASKET_REF}`](https://github.com/google/gasket-driver/tree/${GASKET_REF}) |
+          | Gasket ref | [`${GASKET_REF}`](https://github.com/${GASKET_REPO}/tree/${GASKET_REF}) |
           | Target kernel | `${REAL_KVER}` |
           | Built on | `${RUNNER_IMAGE}` |
           | Source commit | [`${BUILD_SHA}`](https://github.com/${REPO}/commit/${BUILD_SHA}) |
@@ -648,7 +654,7 @@ jobs:
           See `coral.raw.sha256`.
 
           ### Source
-          Kernel modules built from [google/gasket-driver](https://github.com/google/gasket-driver) at ref `${GASKET_REF}`.
+          Kernel modules built from [${GASKET_REPO}](https://github.com/${GASKET_REPO}) at ref `${GASKET_REF}`.
           RELEASE_NOTES
 
           echo "=== Rendered release notes ==="

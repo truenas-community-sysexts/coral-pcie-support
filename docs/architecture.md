@@ -11,7 +11,7 @@ The Coral PCIe TPU requires two kernel modules (`gasket.ko` and `apex.ko`) and n
 The gasket/apex driver is a standard out-of-tree kernel module that only needs:
 - Kernel headers matching the target TrueNAS kernel
 - Standard build toolchain (gcc, make)
-- gasket-driver source code
+- gasket-driver source code (from [feranick/gasket-driver](https://github.com/feranick/gasket-driver))
 
 This means we can skip scale-build entirely, reducing build time from hours to minutes.
 
@@ -24,7 +24,7 @@ This means we can skip scale-build entirely, reducing build time from hours to m
 │  1. Download TrueNAS ISO (cached)                            │
 │  2. Extract kernel headers from nested squashfs (cached)     │
 │  3. Detect real kernel version from headers                  │
-│  4. Clone google/gasket-driver, apply kernel compat patches  │
+│  4. Clone feranick/gasket-driver at tracked ref               │
 │  5. Build gasket.ko + apex.ko (gcc matching kernel)          │
 │  6. Assemble sysext tree (NO firmware, NO depmod)            │
 │  7. mksquashfs -> coral.raw (zstd compressed)                │
@@ -100,17 +100,6 @@ make CC=gcc-12 KDIR=/path/to/linux-headers-<KVER> modules
 ```
 
 This produces `gasket.ko` and `apex.ko`. The `CC=gcc-12` is critical: without it, GCC 11 fails on the `-ftrivial-auto-var-init=zero` flag baked into the kernel's build config.
-
-#### Kernel compatibility patches
-
-The upstream `google/gasket-driver` repository is archived and has not been updated for newer kernel APIs. The `patches/` directory contains compatibility patches adapted from [feranick/gasket-driver](https://github.com/feranick/gasket-driver) that fix build failures against modern kernels (6.x+):
-
-- `0001-gasket-remove-llseek-assignment.patch` - removed `llseek` field (kernel API change)
-- `0002-gasket-class-create-single-arg.patch` - `class_create()` signature change
-- `0003-gasket-eventfd-signal-single-arg.patch` - `eventfd_signal()` signature change
-- `0004-gasket-module-import-ns-quoting.patch` - `MODULE_IMPORT_NS()` quoting change
-
-The `patches/apply-patches.sh` script applies each patch conditionally, skipping any that are already applied or not applicable to the target kernel.
 
 ### Step Detail: Sysext Assembly
 
@@ -267,8 +256,10 @@ This is critical because a new TrueNAS release may ship a different kernel, requ
 
 ### Gasket driver
 
-The gasket-driver version is manually pinned in `tracked-versions.json`. The upstream repository ([google/gasket-driver](https://github.com/google/gasket-driver)) is archived and receives no new releases, so there is no automated bump to track. If the driver version ever needs to change, it is updated by hand.
+The daily check also monitors [feranick/gasket-driver](https://github.com/feranick/gasket-driver) releases for new tags. Feranick actively maintains kernel compatibility fixes on top of the archived `google/gasket-driver`. When a new release is found (e.g., `1.0-18.4` -> `1.0-18.5`), the workflow bumps `gasket.driver` and `gasket.ref` in `tracked-versions.json` and dispatches a build.
+
+Unlike the Hailo sysext (which caps the driver version at Frigate's pin), the gasket driver has no consumer version gate. Any gasket release that compiles against the target kernel is usable with any Frigate version.
 
 ### Consolidated commit and dispatch
 
-If the TrueNAS version moved, the workflow writes the state file in one commit and dispatches a single build with `mark_latest='false'`. Auto-builds publish releases without the "Latest" badge. A human verifies the build on Coral hardware and promotes it via the GitHub UI.
+If either upstream moved, the workflow writes the state file in one commit and dispatches a single build with `mark_latest='false'`. Auto-builds publish releases without the "Latest" badge. A human verifies the build on Coral hardware and promotes it via the GitHub UI.

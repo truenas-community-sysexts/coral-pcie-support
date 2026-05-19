@@ -7,7 +7,7 @@ This project compiles the Coral gasket/apex driver standalone (~10-20 minutes):
 1. Downloads the TrueNAS ISO for the target version
 2. Extracts kernel headers from the nested rootfs squashfs
 3. Detects the real kernel version (e.g., `6.12.33-production+truenas`)
-4. Clones `google/gasket-driver` at the pinned ref and applies kernel compatibility patches
+4. Clones [feranick/gasket-driver](https://github.com/feranick/gasket-driver) at the tracked ref
 5. Compiles `gasket.ko` and `apex.ko` with gcc-12 against those exact headers
 6. Packages everything as a squashfs sysext image
 
@@ -23,9 +23,9 @@ The runner image is resolved per-build from TrueNAS's published Debian release (
 A single daily GitHub Actions workflow (`check-releases.yml`, 06:00 UTC) monitors TrueNAS releases and updates `.github/tracked-versions.json`:
 
 - **TrueNAS half**: looks for new TrueNAS SCALE releases (highest stable `TS-*` tag in `truenas/scale-build`). When the matching ISO is live at `download.truenas.com`, it stages a bump of `truenas.version` (and `truenas.train` on a train rollover).
-- **Gasket half**: manually pinned. The upstream `google/gasket-driver` repo is archived. The `gasket.ref` in `tracked-versions.json` is only changed by hand after hardware testing.
+- **Gasket half**: monitors [feranick/gasket-driver](https://github.com/feranick/gasket-driver) releases for new tags. Feranick actively maintains kernel compatibility fixes on top of the archived `google/gasket-driver`. When a new release appears, it bumps `gasket.driver` and `gasket.ref`.
 
-If the TrueNAS version moved, the workflow writes the file in one commit and dispatches one build. Auto-builds publish releases without the "Latest" badge. Verify the build on Coral PCIe hardware, then promote it to Latest manually in the GitHub UI.
+If either upstream moved, the workflow writes the file in one commit and dispatches one build. Auto-builds publish releases without the "Latest" badge. Verify the build on Coral PCIe hardware, then promote it to Latest manually in the GitHub UI.
 
 ## Custom Builds
 
@@ -38,7 +38,7 @@ If you need a build for a TrueNAS version that doesn't have a pre-built release,
 3. Fill in the parameters:
    - **TrueNAS version**, e.g., `25.10.3.1` (must match an existing TrueNAS ISO on the download server)
    - **Gasket driver version**, e.g., `1.0-18` (used in the release tag and for tracking)
-   - **Gasket ref**, e.g., `v2.0.22` (git ref to check out in `google/gasket-driver`)
+   - **Gasket ref**, e.g., `1.0-18.4` (git ref/tag to check out in `feranick/gasket-driver`)
    - **Train name**, e.g., `Goldeye` (must match the train iXsystems publishes the ISO under at `download.truenas.com/TrueNAS-SCALE-<train>/<version>/`). The current tracked train lives in [`.github/tracked-versions.json`](../.github/tracked-versions.json).
 4. The workflow builds `coral.raw` and creates a GitHub release in your fork (~10-20 min, ~5 min cached)
 5. Use the install script from your fork's release, or download `coral.raw` and install manually
@@ -46,7 +46,7 @@ If you need a build for a TrueNAS version that doesn't have a pre-built release,
 ### When to Build Custom
 
 - **New TrueNAS release** not yet covered by a pre-built release (the daily check workflow usually catches these within 24 hours of the ISO going live)
-- **Different gasket ref** (e.g., a `feranick/gasket-driver` fork tag with newer patches). Check that the kernel compatibility patches still apply cleanly.
+- **Different gasket ref** (e.g., a specific `feranick/gasket-driver` tag or a different fork entirely)
 - **Modified build** (you've forked the repo to change build options, add patches, etc.)
 
 ### Version Defaults

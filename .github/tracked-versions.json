@@ -4,7 +4,8 @@
     "train": "Goldeye"
   },
   "gasket": {
-    "driver": "1.0-18",
-    "ref": "v2.0.22"
+    "driver": "1.0-18.4",
+    "ref": "1.0-18.4",
+    "repo": "feranick/gasket-driver"
   }
 }

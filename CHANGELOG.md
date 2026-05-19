@@ -22,23 +22,17 @@ Changes since the initial project baseline, organized by area.
 - **Empty-SHA256 defensive reinstall in PREINIT.** If `sha256sum` returns an empty hash for either the installed sysext or the backup, `coral-preinit.sh` reinstalls from backup rather than treating two empty strings as a match.
 - **`coral-load.service` idempotent.** The unit guards on `[ -e /sys/module/gasket ]` / `[ -e /sys/module/apex ]` so it no-ops when PREINIT already loaded the modules. Restart limits (`StartLimitBurst=3`, `StartLimitIntervalSec=60`) cap restart loops on permanent failures.
 
-## Kernel Compatibility Patches
-
-- **Four patches** for `google/gasket-driver` covering kernel API changes from 6.4 through 6.13+: `class_create()` single-arg, `eventfd_signal()` single-arg, `no_llseek` removal, `MODULE_IMPORT_NS` quoting.
-- **Idempotent application.** `apply-patches.sh` uses `git apply --check` and skips already-applied patches.
-- **GPL-2.0 licensed.** Patches directory carries its own GPL-2.0 LICENSE since the patches are derived from GPL-2.0 gasket-driver source.
-
 ## Automated Workflows
 
 - **Single check workflow + single state file.** One workflow (`.github/workflows/check-releases.yml`) and one CI-state file (`.github/tracked-versions.json`) for all version tracking.
 - **Daily schedule.** The check runs daily at 06:00 UTC.
 - **TrueNAS ISO availability gate.** Only bumps the tracked TrueNAS version once the matching ISO is published at `download.truenas.com`.
 - **Auto-resolved train name.** Picks the highest stable scale-build tag and resolves the train from `download.truenas.com`'s directory listing. New trains are picked up automatically.
-- **Gasket ref manually pinned.** Upstream `google/gasket-driver` is archived. The gasket ref is bumped by hand only after hardware testing.
+- **Gasket driver auto-tracked.** The daily check monitors [feranick/gasket-driver](https://github.com/feranick/gasket-driver) releases for new tags. Feranick maintains kernel compatibility fixes on top of the archived `google/gasket-driver`. No local patches directory needed.
 - **`mark_latest` input on `build.yml`.** Auto-built releases publish without claiming "Latest"; a human promotes after hardware verification.
 - **Build runner resolved per-build.** `runs-on:` is resolved from TrueNAS's Debian release via `.github/scripts/resolve-runner.sh`, no longer hardcoded.
 - **Runtime-resolved `workflow_dispatch` defaults.** `build.yml`'s dispatch inputs default to blank; the build's `resolve` job reads `.github/tracked-versions.json` at runtime when no explicit value is given, so manual dispatches always target the latest tracked combo without requiring `build.yml` rewrites on each bump.
-- **Lint workflow.** `shellcheck --severity=warning` on all shell scripts (including `patches/`), `actionlint` on workflow YAML, and `tracked-versions.json` shape validation.
+- **Lint workflow.** `shellcheck --severity=warning` on all shell scripts, `actionlint` on workflow YAML, and `tracked-versions.json` shape validation.
 - **Build-time smoke test.** Before publishing, `build.yml` asserts required files exist and `gasket.ko`/`apex.ko` vermagic matches the target kernel.
 - **Richer release notes.** Includes real kernel version, runner image, build commit SHA, and Frigate compatibility note.
 - **Dependabot for `github-actions`.** Weekly PRs to bump action versions.

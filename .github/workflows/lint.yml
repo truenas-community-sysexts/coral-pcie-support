@@ -8,14 +8,12 @@ on:
       - '.github/scripts/**.sh'
       - '.github/workflows/**.yml'
       - '.github/tracked-versions.json'
-      - 'patches/**.sh'
   pull_request:
     paths:
       - 'scripts/**.sh'
       - '.github/scripts/**.sh'
       - '.github/workflows/**.yml'
       - '.github/tracked-versions.json'
-      - 'patches/**.sh'
   workflow_dispatch:
 
 permissions:
@@ -31,8 +29,7 @@ jobs:
         run: |
           shellcheck --severity=warning \
             scripts/*.sh \
-            .github/scripts/*.sh \
-            patches/*.sh
+            .github/scripts/*.sh
 
   tracked-versions:
     name: tracked-versions.json shape

@@ -68,5 +68,11 @@ g_ref = gasket.get("ref")
 if not isinstance(g_ref, str) or not g_ref.strip():
     fail(f"'gasket.ref' missing or empty (got {g_ref!r})")
 
-print(f"tracked-versions OK: TrueNAS {tn_version} ({tn_train}), gasket driver {g_driver} (ref: {g_ref})")
+g_repo = gasket.get("repo")
+if not isinstance(g_repo, str) or not g_repo.strip():
+    fail(f"'gasket.repo' missing or empty (got {g_repo!r})")
+if "/" not in g_repo:
+    fail(f"'gasket.repo' must be owner/name format (got {g_repo!r})")
+
+print(f"tracked-versions OK: TrueNAS {tn_version} ({tn_train}), gasket driver {g_driver} (ref: {g_ref}, repo: {g_repo})")
 PY
