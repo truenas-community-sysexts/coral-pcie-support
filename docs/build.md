@@ -8,7 +8,7 @@ This project compiles the Coral gasket/apex driver standalone (~10-20 minutes):
 2. Extracts kernel headers from the nested rootfs squashfs
 3. Detects the real kernel version (e.g., `6.12.33-production+truenas`)
 4. Clones [feranick/gasket-driver](https://github.com/feranick/gasket-driver) at the tracked ref
-5. Compiles `gasket.ko` and `apex.ko` with gcc-12 against those exact headers
+5. Compiles `gasket.ko` and `apex.ko` with the kernel-matching GCC against those exact headers
 6. Packages everything as a squashfs sysext image
 
 The runner image is resolved per-build from TrueNAS's published Debian release (`bookworm` -> `ubuntu-22.04`), so binaries link against a GLIBC that's no newer than the TrueNAS rootfs's. See [Build runner resolution](architecture.md#build-runner-resolution) for the lookup path.

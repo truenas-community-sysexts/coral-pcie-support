@@ -312,11 +312,11 @@ jobs:
           # has changed and we want loud failure rather than building
           # against headers we can't identify.
           # shellcheck disable=SC2010 # ls|grep is fine: TrueNAS rootfs filenames are package-controlled (no spaces/newlines)
-          KVER=$(ls /tmp/rootfs/usr/src/ 2>/dev/null | grep 'linux-headers-' | sed 's/linux-headers-//' | grep -i 'production' | head -1)
+          KVER=$(ls /tmp/rootfs/usr/src/ 2>/dev/null | grep 'linux-headers-' | sed 's/linux-headers-//' | grep -i 'production' | head -1 || true)
           if [ -z "$KVER" ]; then
             # Fall back to any non-debug headers
             # shellcheck disable=SC2010
-            KVER=$(ls /tmp/rootfs/usr/src/ 2>/dev/null | grep 'linux-headers-' | sed 's/linux-headers-//' | grep -vi 'debug' | head -1)
+            KVER=$(ls /tmp/rootfs/usr/src/ 2>/dev/null | grep 'linux-headers-' | sed 's/linux-headers-//' | grep -vi 'debug' | head -1 || true)
           fi
 
           if [ -z "$KVER" ]; then
@@ -349,11 +349,11 @@ jobs:
           # and we'd ship a sysext under the wrong /lib/modules/<kver>/.
           if [ -z "$REAL_KVER" ]; then
             # shellcheck disable=SC2010
-            REAL_KVER=$(ls /tmp/rootfs/lib/modules/ 2>/dev/null | grep -v '^\.' | grep -i 'production' | head -1)
+            REAL_KVER=$(ls /tmp/rootfs/lib/modules/ 2>/dev/null | grep -v '^\.' | grep -i 'production' | head -1 || true)
           fi
           if [ -z "$REAL_KVER" ]; then
             # shellcheck disable=SC2010
-            REAL_KVER=$(ls /tmp/rootfs/lib/modules/ 2>/dev/null | grep -v '^\.' | grep -vi 'debug' | head -1)
+            REAL_KVER=$(ls /tmp/rootfs/lib/modules/ 2>/dev/null | grep -v '^\.' | grep -vi 'debug' | head -1 || true)
           fi
           # No fallback to $KVER: the header *package* name (e.g.
           # truenas-production-amd64) is not a kernel release string, and
@@ -397,10 +397,10 @@ jobs:
           # debug headers (whose package name leaks into the module path
           # and would ship a sysext we can't identify).
           # shellcheck disable=SC2010 # ls|grep is fine: TrueNAS package-controlled filenames
-          KVER=$(ls /tmp/kernel-headers/ | grep 'linux-headers-' | sed 's/linux-headers-//' | grep -i 'production' | head -1)
+          KVER=$(ls /tmp/kernel-headers/ | grep 'linux-headers-' | sed 's/linux-headers-//' | grep -i 'production' | head -1 || true)
           if [ -z "$KVER" ]; then
             # shellcheck disable=SC2010
-            KVER=$(ls /tmp/kernel-headers/ | grep 'linux-headers-' | sed 's/linux-headers-//' | grep -vi 'debug' | head -1)
+            KVER=$(ls /tmp/kernel-headers/ | grep 'linux-headers-' | sed 's/linux-headers-//' | grep -vi 'debug' | head -1 || true)
           fi
           if [ -z "$KVER" ]; then
             echo "::error title=kernel-headers::no production or non-debug headers found in cache /tmp/kernel-headers/. Cache may have been populated from a rootfs with a changed layout; bust the kernel-headers cache and re-run."

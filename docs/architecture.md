@@ -36,7 +36,7 @@ This means we can skip scale-build entirely, reducing build time from hours to m
 
 The runner image is resolved per-build so it stays compatible with whatever Debian release TrueNAS is on (the runner's GLIBC must be <= the TrueNAS rootfs's). For example, Debian Bookworm (GLIBC 2.36) maps to **ubuntu-22.04** (GLIBC 2.35); Ubuntu 24.04 (GLIBC 2.39) would produce binaries that won't run on a Bookworm-based rootfs. The current mapping table lives in [`.github/scripts/resolve-runner.sh`](../.github/scripts/resolve-runner.sh).
 
-The kernel modules are compiled with **gcc-12** because the TrueNAS kernel was built with GCC 12, which uses `-ftrivial-auto-var-init=zero`, a flag not supported by GCC 11 (ubuntu-22.04's default).
+The kernel modules are compiled with the same GCC major version that built the TrueNAS kernel, auto-detected from the kernel headers at build time (e.g., `gcc-12` for Bookworm). The version matters because kernel build configs can use compiler-specific flags (e.g., `-ftrivial-auto-var-init=zero` in GCC 12+) that older GCC versions don't support.
 
 #### Build runner resolution
 
@@ -96,10 +96,10 @@ Both `KVER` (header dir name, used for compilation) and `REAL_KVER` (actual kern
 
 ```bash
 cd gasket-driver/src
-make CC=gcc-12 KDIR=/path/to/linux-headers-<KVER> modules
+make CC=$KERNEL_GCC -C /path/to/linux-headers-<KVER> M=$(pwd) modules
 ```
 
-This produces `gasket.ko` and `apex.ko`. The `CC=gcc-12` is critical: without it, GCC 11 fails on the `-ftrivial-auto-var-init=zero` flag baked into the kernel's build config.
+This produces `gasket.ko` and `apex.ko`. `KERNEL_GCC` is auto-detected from the kernel headers (`include/config/cc-version-text` or `include/generated/compile.h`), falling back to `gcc-12` if detection fails. Matching the kernel's compiler is critical: a mismatch can fail the build on compiler-specific flags baked into the kernel config.
 
 ### Step Detail: Sysext Assembly
 
