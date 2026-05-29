@@ -1,5 +1,7 @@
 # Install Reference
 
+> **Runs as root.** `install.sh` performs privileged operations (toggles ZFS `readonly`, writes under `/usr`, calls `midclt`, loads kernel modules), so it must run as root. Use `sudo` as shown in every example below. `--check` and `--dry-run` also require root; only `--help` runs without it.
+
 ## Installing a Specific Version
 
 Release tags encode the versions: `v<truenas>-gasket<driver>-r<run>` (e.g., `v25.10.3.1-gasket1.0-18-r23`).
@@ -29,7 +31,7 @@ sudo bash install.sh /tmp/coral.raw
 | --- | --- |
 | `--repo=OWNER/NAME` | GitHub repo for releases (default: `truenas-community-sysexts/coral-pcie-support`). Also settable via `CORAL_REPO` env var. |
 | `--pool=NAME` | ZFS pool for persistent config (e.g., `fast`) |
-| `--persist-path=PATH` | Exact path for persistent config directory |
+| `--persist-path=PATH` | Persistent config directory. Must be `/mnt/<pool>/.config/coral` (the exact location the boot-time PREINIT script scans). Prefer `--pool`, which builds this path for you. |
 | `--check` | Probe an existing install (read-only) and report status |
 | `--dry-run` | Validate everything (downloads, checksums, network) without modifying the system |
 | `--help` | Show usage help |
