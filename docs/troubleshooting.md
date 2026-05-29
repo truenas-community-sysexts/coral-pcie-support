@@ -6,7 +6,7 @@ After TrueNAS updates the underlying kernel, the boot-time PREINIT script
 logs the following and `/dev/apex_0` will not initialize:
 
 ```
-[coral-preinit] ERROR: Kernel version mismatch - running <new-kver> but sysext has module for <old-kver>
+[coral-preinit] ERROR: Kernel version mismatch: running <new-kver> but sysext has modules for <old-kver>
 [coral-preinit] ERROR: TrueNAS was likely updated. Download a new coral.raw release matching <new-kver>
 [coral-preinit] ERROR: Visit https://github.com/<repo>/releases
 ```
