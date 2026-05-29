@@ -353,20 +353,25 @@ if [ "$(id -u 2>/dev/null)" != "0" ]; then
     exit 1
 fi
 
-# Reject a --persist-path under /usr. /usr is a read-only ZFS dataset the
-# installer only briefly flips writable, and TrueNAS resets it on every
-# update, so a "persistent" copy there would be lost. Persistence must live
-# on a data pool (e.g. /mnt/<pool>/.config/coral).
+# Persistence only works if --persist-path is the exact location the
+# boot-time PREINIT script scans: /mnt/<pool>/.config/coral, a single pool
+# component under /mnt. coral-preinit.sh re-derives the dir by globbing
+# /mnt/*/.config/coral and reads nothing else, so any other path silently
+# breaks persistence after the next reboot or TrueNAS update:
+#   - tmpfs (/tmp, /run): backup and script gone on the next reboot
+#   - an OS dir (/usr, /etc, /var, /data, /): wiped on the next update
+#   - a real pool but wrong/deeper subdir (/mnt/tank/foo): the glob misses it
+# Anchored regex (not a case glob, whose * would span /) enforces a single
+# pool component. --pool resolves to this shape automatically.
 if [ -n "$PERSIST_PATH" ]; then
     PERSIST_PATH_REAL=$(realpath -m "$PERSIST_PATH" 2>/dev/null || echo "$PERSIST_PATH")
-    case "$PERSIST_PATH_REAL" in
-        /usr|/usr/*)
-            echo "ERROR: --persist-path must not be under /usr: ${PERSIST_PATH}" >&2
-            echo "  /usr is read-only and is reset on TrueNAS updates, so the config would not persist." >&2
-            echo "  Use a data pool path, e.g. /mnt/<pool>/.config/coral" >&2
-            exit 2
-            ;;
-    esac
+    if [[ ! "$PERSIST_PATH_REAL" =~ ^/mnt/[^/]+/\.config/coral/?$ ]]; then
+        echo "ERROR: --persist-path must be /mnt/<pool>/.config/coral (got: ${PERSIST_PATH})" >&2
+        echo "  The boot-time PREINIT script only scans /mnt/*/.config/coral for the backup," >&2
+        echo "  so any other location silently breaks persistence after a reboot or update." >&2
+        echo "  Pass --pool=<name> instead (it resolves to /mnt/<name>/.config/coral)." >&2
+        exit 2
+    fi
 fi
 
 # Source shared library (provides coral_init_script_lookup).
