@@ -116,8 +116,35 @@ GASKET_KO="/usr/lib/modules/${running_kver}/extra/gasket.ko"
 APEX_KO="/usr/lib/modules/${running_kver}/extra/apex.ko"
 if [ -f "$GASKET_KO" ] && [ -f "$APEX_KO" ]; then
     log "Loading Coral modules..."
-    insmod "$GASKET_KO" || log "WARNING: insmod gasket failed"
-    insmod "$APEX_KO" || log "WARNING: insmod apex failed (device may not be present)"
+    gasket_ok=1
+    if [ -e /sys/module/gasket ]; then
+        log "gasket module already loaded, skipping insmod"
+    else
+        insmod_rc=0
+        insmod_err=$(insmod "$GASKET_KO" 2>&1) || insmod_rc=$?
+        if [ "$insmod_rc" -ne 0 ]; then
+            gasket_ok=0
+            log "ERROR: insmod gasket failed (rc=${insmod_rc}): ${insmod_err:-no output from insmod}"
+            log "ERROR: check 'dmesg | grep -i gasket' for the kernel reason; a TrueNAS update can introduce a driver/kernel ABI mismatch"
+            log "ERROR: if so, install a coral.raw release matching ${running_kver} from https://github.com/${CORAL_REPO}/releases"
+        fi
+    fi
+
+    # apex binds to gasket's symbols, so only attempt it if gasket is present.
+    if [ "$gasket_ok" -eq 1 ]; then
+        if [ -e /sys/module/apex ]; then
+            log "apex module already loaded, skipping insmod"
+        else
+            insmod_rc=0
+            insmod_err=$(insmod "$APEX_KO" 2>&1) || insmod_rc=$?
+            if [ "$insmod_rc" -ne 0 ]; then
+                log "ERROR: insmod apex failed (rc=${insmod_rc}): ${insmod_err:-no output from insmod}"
+                log "ERROR: check 'dmesg | grep -i apex' for the kernel reason"
+            fi
+        fi
+    else
+        log "ERROR: skipping apex because gasket is not loaded (apex depends on gasket)"
+    fi
 else
     SYSEXT_KVER=""
     for d in /usr/lib/modules/*/; do
