@@ -1,6 +1,6 @@
 # Install Reference
 
-> **Runs as root.** `install.sh` performs privileged operations (toggles ZFS `readonly`, writes under `/usr`, calls `midclt`, loads kernel modules), so it must run as root. Use `sudo` as shown in every example below. `--check` and `--dry-run` also require root; only `--help` runs without it.
+> **Runs as root.** `install.sh` performs privileged operations (writes to a data pool, manages sysexts via `systemd-sysext`, calls `midclt`, loads kernel modules), so it must run as root. Use `sudo` as shown in every example below. `--check` and `--dry-run` also require root; only `--help` runs without it.
 
 ## Installing a Specific Version
 
@@ -56,8 +56,8 @@ curl -fsSL https://github.com/truenas-community-sysexts/coral-pcie-support/relea
 1. **Downloads `coral.raw`** from the GitHub release matching your TrueNAS version (or uses a local file)
 2. **Verifies the checksum** (SHA256)
 3. **Extracts the PREINIT script** from inside the sysext squashfs
-4. **Installs the sysext** to `/usr/share/truenas/sysext-extensions/coral.raw`
-5. **Activates the sysext** via TrueNAS's symlink + refresh pattern
+4. **Installs the sysext** to `/mnt/<pool>/.config/coral/coral.raw` on a data pool
+5. **Activates the sysext** in place via TrueNAS's symlink + refresh pattern
 6. **Loads the kernel modules** via `insmod` (gasket first, then apex)
 7. **Sets up persistence** (see below)
 
@@ -67,16 +67,16 @@ TrueNAS updates replace the rootfs, which wipes `/usr/` and any installed sysext
 
 ### Recovery Process
 
-1. **Backup**: The sysext is copied to a persistent ZFS pool
+1. **Image on the data pool**: The sysext is written to a persistent ZFS pool, and that is the copy `/run/extensions/` activates
 2. **PREINIT script**: Registered with TrueNAS middleware, runs on every boot before apps start
-3. On boot, the script compares checksums; if the installed sysext differs from the backup (indicating a TrueNAS update) or is missing, it reinstalls from the backup
+3. On boot, the script re-points `/run/extensions/coral.raw` at the data-pool image and runs `systemd-sysext refresh`. Because the image lives on the data pool (not `/usr`), a TrueNAS update cannot wipe it, so the same path works on every boot
 4. No network access is needed at boot
 
 ### Persistent Storage Layout
 
 ```text
 /mnt/<pool>/.config/coral/
-├── coral.raw                ← Sysext backup
+├── coral.raw                ← Sysext image, activated in place
 ├── .coral-driver-version    ← Gasket driver version (informational)
 ├── .coral-repo              ← Source GitHub repo (used by preinit for error messages)
 └── coral-preinit.sh         ← Boot script (extracted from coral.raw, registered as PREINIT)

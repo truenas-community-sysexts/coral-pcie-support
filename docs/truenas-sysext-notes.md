@@ -23,22 +23,24 @@ PREINIT runs after ZFS pools are mounted but before the middleware starts apps. 
 
 Because of this:
 - `depmod` cannot write to `/lib/modules`, so `modprobe` won't find out-of-tree modules. Use `insmod` with an absolute path instead.
-- Install scripts that place files in `/usr` must temporarily unlock the ZFS dataset and re-lock it on exit (use a `trap` for safety).
+- You do not need to write the `.raw` under `/usr` at all. Keep it on a data pool and symlink `/run/extensions/` straight at it (see below), which avoids the `zfs set readonly=off/on` dance entirely.
 
 ## Sysext activation path
 
 TrueNAS does not use the standard `systemd-sysext merge` path (`/var/lib/extensions/`). The working pattern is:
 
-1. Place `<name>.raw` at `/usr/share/truenas/sysext-extensions/<name>.raw`
+1. Keep `<name>.raw` on a ZFS data pool, e.g. `/mnt/<pool>/.config/<name>/<name>.raw`
 2. Symlink into `/run/extensions/<name>.raw`
 3. `systemd-sysext refresh`
 4. `ldconfig`
 
-The `/run/extensions/` symlink is on tmpfs and disappears on every reboot, which is why the PREINIT script must recreate it.
+`systemd-sysext` loop-mounts whatever the symlink resolves to. `loop_device_make_by_path()` is filesystem-agnostic, so the image can live on the data pool just as well as on the boot pool; there is no need to copy it under `/usr/` first. The `/run/extensions/` symlink is on tmpfs and disappears on every reboot, which is why the PREINIT script must recreate it.
+
+This only applies to **additive** sysexts (ones that add new files to `/usr`). A sysext that replaces stock TrueNAS files is a different problem and is out of scope here.
 
 ## TrueNAS updates wipe /usr
 
-Any sysext placed in `/usr/` is lost when TrueNAS updates (the rootfs is replaced). Persistence requires a backup on a ZFS data pool (`/mnt/<pool>/`) and a PREINIT script that restores it on boot.
+Any sysext placed in `/usr/` is lost when TrueNAS updates (the rootfs is replaced). Keeping the `.raw` on a ZFS data pool (`/mnt/<pool>/`) sidesteps this: the image is never on `/usr` in the first place, so an update cannot wipe it. A PREINIT script recreates the `/run/extensions/` symlink and refreshes on each boot.
 
 ## `Type=oneshot RemainAfterExit=yes` gotcha
 

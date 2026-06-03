@@ -13,17 +13,6 @@ log() {
     logger -t coral-preinit "$*" 2>/dev/null || true
 }
 
-USR_WAS_WRITABLE=0
-USR_DATASET=""
-
-restore_usr_readonly() {
-    if [ "$USR_WAS_WRITABLE" = "1" ] && [ -n "$USR_DATASET" ]; then
-        zfs set readonly=on "$USR_DATASET" 2>/dev/null || true
-        USR_WAS_WRITABLE=0
-    fi
-}
-trap restore_usr_readonly EXIT INT TERM
-
 # --- Find persistent config via glob ---
 # nullglob: if no pool matches, the loop body never runs (instead of
 # iterating once with the literal glob string). Localized via subshell-free
@@ -46,8 +35,11 @@ if [ ${#PERSIST_DIRS[@]} -gt 1 ]; then
 fi
 PERSIST_DIR="${PERSIST_DIRS[0]}"
 
-CORAL_RAW_BACKUP="${PERSIST_DIR}/coral.raw"
-SYSEXT_TARGET="/usr/share/truenas/sysext-extensions/coral.raw"
+# The persistent blob on the data pool is the sysext image itself; we point
+# /run/extensions at it directly instead of copying it onto the boot pool.
+# /usr is wiped on every TrueNAS update, so a boot-pool copy would not survive
+# anyway, and writing to /usr means toggling its readonly ZFS property.
+CORAL_RAW="${PERSIST_DIR}/coral.raw"
 
 # Read which repo this install came from (written by install.sh)
 CORAL_REPO="truenas-community-sysexts/coral-pcie-support"
@@ -56,56 +48,19 @@ if [ -f "${PERSIST_DIR}/.coral-repo" ]; then
     [ -z "$CORAL_REPO" ] && CORAL_REPO="truenas-community-sysexts/coral-pcie-support"
 fi
 
-if [ ! -f "$CORAL_RAW_BACKUP" ]; then
-    log "No coral.raw backup at ${CORAL_RAW_BACKUP}, nothing to do"
+if [ ! -f "$CORAL_RAW" ]; then
+    log "No coral.raw at ${CORAL_RAW}, nothing to do"
     exit 0
 fi
 
-# --- Compare checksums and reinstall if needed ---
-NEED_COPY=true
-if [ -f "$SYSEXT_TARGET" ]; then
-    INSTALLED_SUM=$(sha256sum "$SYSEXT_TARGET" | awk '{print $1}')
-    BACKUP_SUM=$(sha256sum "$CORAL_RAW_BACKUP" | awk '{print $1}')
-    if [ -z "$INSTALLED_SUM" ] || [ -z "$BACKUP_SUM" ]; then
-        log "WARNING: failed to read sha256 (installed='${INSTALLED_SUM}', backup='${BACKUP_SUM}'); reinstalling defensively"
-    elif [ "$INSTALLED_SUM" = "$BACKUP_SUM" ]; then
-        log "coral.raw already matches backup, skipping copy"
-        NEED_COPY=false
-    else
-        log "coral.raw differs from backup (update detected), reinstalling..."
-    fi
-else
-    log "coral.raw missing, installing from backup..."
-fi
-
-if [ "$NEED_COPY" = true ]; then
-    log "Removing old coral sysext..."
-    rm -f /run/extensions/coral.raw
-    systemd-sysext unmerge 2>/dev/null || true
-
-    log "Making /usr writable..."
-    USR_DATASET=$(zfs list -H -o name /usr 2>/dev/null) || true
-    if [ -n "$USR_DATASET" ]; then
-        zfs set readonly=off "$USR_DATASET"
-        USR_WAS_WRITABLE=1
-    fi
-
-    log "Copying coral.raw from backup..."
-    if ! cp "$CORAL_RAW_BACKUP" "$SYSEXT_TARGET"; then
-        log "ERROR: Failed to copy coral.raw from backup"
-        exit 1
-    fi
-
-    if [ -n "$USR_DATASET" ]; then
-        zfs set readonly=on "$USR_DATASET"
-        USR_WAS_WRITABLE=0
-    fi
-fi
-
-# --- Always activate sysext (symlink is on tmpfs, gone after reboot) ---
+# --- Activate sysext directly off the data pool ---
+# /run/extensions is tmpfs (gone after reboot), so we recreate the symlink
+# every boot. systemd-sysext loop-mounts the symlink target wherever it lives;
+# loop_device_make_by_path() is filesystem-agnostic, so a ZFS data-pool path
+# works the same as a boot-pool path.
 log "Activating coral sysext..."
 mkdir -p /run/extensions
-ln -sf "$SYSEXT_TARGET" /run/extensions/coral.raw
+ln -sf "$CORAL_RAW" /run/extensions/coral.raw
 systemd-sysext refresh
 ldconfig
 

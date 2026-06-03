@@ -62,11 +62,14 @@ do_check() {
             "re-run install.sh or manually insmod the modules under /usr/lib/modules/\$(uname -r)/extra/"
     fi
 
-    # 3. Sysext file present on disk
-    if [ -f "$CORAL_RAW" ]; then
-        record_pass "Sysext present at ${CORAL_RAW}"
+    # 3. Activation symlink present and resolves to an image. It lives on tmpfs
+    # (/run/extensions), so the PREINIT script recreates it on every boot; a
+    # missing symlink is a warning, not a hard failure.
+    if [ -L /run/extensions/coral.raw ] && [ -f /run/extensions/coral.raw ]; then
+        record_pass "Activation symlink /run/extensions/coral.raw resolves to an image"
     else
-        record_fail "Sysext missing at ${CORAL_RAW}" "re-run install.sh"
+        record_warn "Activation symlink /run/extensions/coral.raw missing or dangling" \
+            "the PREINIT script recreates it on boot; reboot or re-run install.sh"
     fi
 
     # 4. Sysext merged into /usr
@@ -276,8 +279,9 @@ resolve_persist_dir() {
 
 # REPO can be overridden via --repo=OWNER/NAME or CORAL_REPO env var.
 REPO="${CORAL_REPO:-truenas-community-sysexts/coral-pcie-support}"
-SYSEXT_DIR="/usr/share/truenas/sysext-extensions"
-CORAL_RAW="${SYSEXT_DIR}/coral.raw"
+# CORAL_RAW (the sysext image we activate) lives on the data pool and is set
+# to "${PERSIST_DIR}/coral.raw" once the persistent pool is resolved below.
+CORAL_RAW=""
 
 # --- Parse CLI arguments ---
 LOCAL_RAW=""
@@ -409,19 +413,9 @@ if [ "$CHECK_MODE" = "1" ]; then
     exit $?
 fi
 
-# USR_WAS_WRITABLE: 1 while we have ${USR_DATASET}'s readonly=off and
-# haven't restored it yet. The cleanup trap re-asserts readonly=on so
-# any failure path between off and on (cp errors, SIGINT/SIGTERM) does
-# not leave /usr writable until reboot.
-USR_WAS_WRITABLE=0
-
 WORK_DIR=$(mktemp -d /tmp/coral-install.XXXXXXXXXX)
 
 cleanup() {
-    if [ "$USR_WAS_WRITABLE" = "1" ] && [ -n "${USR_DATASET:-}" ] && [ "$DRY_RUN" != "1" ]; then
-        zfs set readonly=on "${USR_DATASET}" 2>/dev/null || true
-        USR_WAS_WRITABLE=0
-    fi
     [ -n "${WORK_DIR:-}" ] && rm -rf "$WORK_DIR"
 }
 trap cleanup EXIT INT TERM
@@ -548,6 +542,22 @@ echo "PREINIT script extracted"
 echo ""
 echo "=== Installing coral.raw ==="
 
+# --- Detect persistent storage pool ---
+# The sysext image lives only on the data pool; /run/extensions points at it
+# directly. Resolve the pool first so the blob is in place before we activate.
+if ! resolve_persist_dir; then
+    echo "ERROR: No persistent storage pool found; cannot install." >&2
+    exit 1
+fi
+echo "Persistent config directory: ${PERSIST_DIR}"
+if_real mkdir -p "$PERSIST_DIR"
+CORAL_RAW="${PERSIST_DIR}/coral.raw"
+
+# Write the sysext image to the data pool. This is the single copy we activate
+# and the one that survives reboots and TrueNAS updates (no boot-pool copy).
+echo "Installing coral.raw to ${CORAL_RAW}..."
+if_real cp "${WORK_DIR}/coral.raw" "${CORAL_RAW}"
+
 # Remove coral from sysext before modifying. If nothing is currently merged,
 # unmerge exits non-zero with "No extensions found" on stderr, which is fine.
 # A real failure (overlay held open by another process) must not be swallowed.
@@ -567,32 +577,9 @@ else
     echo "[dry-run] would: systemd-sysext unmerge"
 fi
 
-# Make /usr writable
-USR_DATASET=$(zfs list -H -o name /usr 2>/dev/null) || { echo "ERROR: Failed to find ZFS dataset for /usr"; exit 1; }
-[ -z "$USR_DATASET" ] && { echo "ERROR: ZFS dataset for /usr is empty"; exit 1; }
-echo "Setting ${USR_DATASET} to writable..."
-if [ "$DRY_RUN" = "1" ]; then
-    echo "[dry-run] would: zfs set readonly=off ${USR_DATASET}"
-else
-    zfs set readonly=off "${USR_DATASET}" || { echo "ERROR: Failed to make ${USR_DATASET} writable"; exit 1; }
-    USR_WAS_WRITABLE=1
-fi
-
-# Install new coral.raw (backup is on persistent pool, no need for .bak).
-# If cp fails, the cleanup trap re-asserts readonly=on so we never
-# leave /usr writable on the failure path.
-echo "Installing new coral.raw..."
-if_real cp "${WORK_DIR}/coral.raw" "${CORAL_RAW}"
-
-# Restore read-only
-if [ "$DRY_RUN" = "1" ]; then
-    echo "[dry-run] would: zfs set readonly=on ${USR_DATASET}"
-else
-    zfs set readonly=on "${USR_DATASET}"
-    USR_WAS_WRITABLE=0
-fi
-
-# Activate sysext via symlink + refresh (TrueNAS middleware pattern)
+# Activate sysext via symlink + refresh (TrueNAS middleware pattern).
+# systemd-sysext loop-mounts the symlink target wherever it lives, so pointing
+# at the ZFS data-pool path works the same as a boot-pool path would.
 echo "Activating coral sysext..."
 if_real mkdir -p /run/extensions
 if_real ln -sf "${CORAL_RAW}" /run/extensions/coral.raw
@@ -643,18 +630,9 @@ fi
 echo ""
 echo "=== Setting up persistence ==="
 
-# --- Detect persistent storage pool ---
-if ! resolve_persist_dir; then
-    echo "  The sysext is loaded for this session but will NOT survive a reboot." >&2
-    exit 1
-fi
-
-echo "Persistent config directory: ${PERSIST_DIR}"
-if_real mkdir -p "$PERSIST_DIR"
-
-# --- Backup coral.raw to persistent storage ---
-echo "Backing up coral.raw to persistent storage..."
-if_real cp "${WORK_DIR}/coral.raw" "${PERSIST_DIR}/coral.raw"
+# The sysext image (${PERSIST_DIR}/coral.raw) and its activation symlink were
+# put in place during install above. Here we record metadata and register the
+# boot-time PREINIT script that re-creates the symlink after each reboot.
 
 # Save gasket driver version for reference
 if [ -n "${GASKET_VERSION:-}" ]; then
@@ -751,7 +729,7 @@ if [ "$DRY_RUN" = "1" ]; then
     echo "No changes were made to the system."
     echo ""
     echo "Would have installed:"
-    echo "  Sysext target:     ${CORAL_RAW}"
+    echo "  Sysext image:      ${CORAL_RAW}"
     echo "  Persistent dir:    ${PERSIST_DIR}"
     [ -n "${GASKET_VERSION:-}" ] && echo "  Gasket version:    ${GASKET_VERSION}"
     [ -n "${RELEASE_TAG:-}" ] && echo "  Release tag:       ${RELEASE_TAG}"
