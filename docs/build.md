@@ -22,7 +22,7 @@ The runner image is resolved per-build from TrueNAS's published Debian release (
 
 A single daily GitHub Actions workflow (`check-releases.yml`, 06:00 UTC) monitors TrueNAS releases and updates `.github/tracked-versions.json`:
 
-- **TrueNAS half**: looks for new TrueNAS SCALE releases (highest stable `TS-*` tag in `truenas/scale-build`). When the matching ISO is live at `download.truenas.com`, it stages a bump of `truenas.version` (and `truenas.train` on a train rollover).
+- **TrueNAS half**: looks for new TrueNAS releases (highest stable `TS-*` tag in `truenas/scale-build`). When the matching ISO is live at `download.truenas.com`, it stages a bump of `truenas.version` (and `truenas.train` on a train rollover).
 - **Gasket half**: monitors [feranick/gasket-driver](https://github.com/feranick/gasket-driver) releases for new tags. Feranick actively maintains kernel compatibility fixes on top of the archived `google/gasket-driver`. When a new release appears, it bumps `gasket.driver` and `gasket.ref`.
 
 If either upstream moved, the workflow writes the file in one commit and dispatches one build. Auto-builds publish releases without the "Latest" badge. Verify the build on Coral PCIe hardware, then promote it to Latest manually in the GitHub UI.
