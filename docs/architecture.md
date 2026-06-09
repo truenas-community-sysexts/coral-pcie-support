@@ -2,7 +2,7 @@
 
 ## Overview
 
-This project builds a systemd-sysext package (`coral.raw`) containing the Google Coral PCIe TPU driver for TrueNAS SCALE. The sysext is a squashfs image that overlays `/usr/` via overlayfs when activated with `systemd-sysext refresh`.
+This project builds a systemd-sysext package (`coral.raw`) containing the Google Coral PCIe TPU driver for TrueNAS. The sysext is a squashfs image that overlays `/usr/` via overlayfs when activated with `systemd-sysext refresh`.
 
 The Coral PCIe TPU requires two kernel modules (`gasket.ko` and `apex.ko`) and nothing else: no firmware download, no userspace library, no CLI tool. This makes the build and install simpler than other accelerator sysexts.
 

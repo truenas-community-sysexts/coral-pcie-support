@@ -1,6 +1,6 @@
 # TrueNAS Sysext Notes
 
-Practical knowledge about building and shipping systemd-sysext packages on TrueNAS SCALE. Gathered from this project and from other community sysext projects.
+Practical knowledge about building and shipping systemd-sysext packages on TrueNAS. Gathered from this project and from other community sysext projects.
 
 ## Boot-time unit activation
 

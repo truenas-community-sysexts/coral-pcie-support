@@ -1,6 +1,6 @@
-# Google Coral PCIe TPU Sysext for TrueNAS SCALE
+# Google Coral PCIe TPU Sysext for TrueNAS
 
-A systemd-sysext package that adds [Google Coral](https://coral.ai/) PCIe TPU support to TrueNAS SCALE. Primarily useful for running [Frigate NVR](https://frigate.video/) with hardware-accelerated AI object detection.
+A systemd-sysext package that adds [Google Coral](https://coral.ai/) PCIe TPU support to TrueNAS. Primarily useful for running [Frigate NVR](https://frigate.video/) with hardware-accelerated AI object detection.
 
 ## Documentation
 
@@ -38,7 +38,7 @@ No firmware is needed. The Coral PCIe TPU works with just the kernel modules.
 
 ### Prerequisites
 
-- TrueNAS SCALE 25.10 or newer (the current target train and version are recorded in [`.github/tracked-versions.json`](.github/tracked-versions.json) and tracked automatically)
+- TrueNAS 25.10 or newer (the current target train and version are recorded in [`.github/tracked-versions.json`](.github/tracked-versions.json) and tracked automatically)
 - Coral PCIe TPU installed and visible (`lspci | grep 089a`)
 - Root/sudo access
 - Internet access (to download the release)
