@@ -105,6 +105,17 @@ detectors:
     device: pci
 ```
 
+If you have a coral dual or multiple coral singles in your system then in your Frigate `config.yaml`:
+
+ ```yaml
+ coral1:
+    type: edgetpu
+    device: pci:0
+  coral2:
+    type: edgetpu
+    device: pci:1
+```
+
 ## Important Notes
 
 - The kernel module must match the exact TrueNAS kernel version. If you update TrueNAS, you need a matching sysext build. See [troubleshooting](docs/troubleshooting.md) for recovery steps.
