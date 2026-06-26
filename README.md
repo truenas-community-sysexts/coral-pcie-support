@@ -2,29 +2,6 @@
 
 A systemd-sysext package that adds [Google Coral](https://coral.ai/) PCIe TPU support to TrueNAS. Primarily useful for running [Frigate NVR](https://frigate.video/) with hardware-accelerated AI object detection.
 
-## Documentation
-
-| Doc | Contents |
-| --- | --- |
-| [Quick Start](#quick-start) | Install, verify, uninstall |
-| [docs/install.md](docs/install.md) | Install options, persistence, scripts reference |
-| [docs/build.md](docs/build.md) | Build process, custom builds, automated updates |
-| [docs/architecture.md](docs/architecture.md) | Deep technical reference: sysext structure, build pipeline, read-only constraints |
-| [docs/troubleshooting.md](docs/troubleshooting.md) | Kernel mismatch recovery after TrueNAS updates |
-
-## What's Included
-
-The `coral.raw` sysext contains:
-
-| Component | Description |
-| --- | --- |
-| `gasket.ko` | Gasket PCIe kernel module |
-| `apex.ko` | Apex driver for Coral TPU |
-| `coral-load.service` | Systemd service for automatic module loading |
-| `51-coral-udev.rules` | Udev rules for `/dev/apex*` permissions |
-
-No firmware is needed. The Coral PCIe TPU works with just the kernel modules.
-
 ## Compatibility
 
 | Device | Supported | Notes |
@@ -136,6 +113,29 @@ If you have a coral dual or multiple coral singles in your system then in your F
 - The kernel module must match the exact TrueNAS kernel version. If you update TrueNAS, you need a matching sysext build. See [troubleshooting](docs/troubleshooting.md) for recovery steps.
 - The unsigned kernel module may require disabling Secure Boot.
 - No firmware download is needed, unlike some other accelerator sysexts. The Coral PCIe TPU operates with just the gasket and apex kernel modules.
+
+## Documentation
+
+| Doc | Contents |
+| --- | --- |
+| [Quick Start](#quick-start) | Install, verify, uninstall |
+| [docs/install.md](docs/install.md) | Install options, persistence, scripts reference |
+| [docs/build.md](docs/build.md) | Build process, custom builds, automated updates |
+| [docs/architecture.md](docs/architecture.md) | Deep technical reference: sysext structure, build pipeline, read-only constraints |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Kernel mismatch recovery after TrueNAS updates |
+
+## What's Included
+
+The `coral.raw` sysext contains:
+
+| Component | Description |
+| --- | --- |
+| `gasket.ko` | Gasket PCIe kernel module |
+| `apex.ko` | Apex driver for Coral TPU |
+| `coral-load.service` | Systemd service for automatic module loading |
+| `51-coral-udev.rules` | Udev rules for `/dev/apex*` permissions |
+
+No firmware is needed. The Coral PCIe TPU works with just the kernel modules.
 
 ## License
 
