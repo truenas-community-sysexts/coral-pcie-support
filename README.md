@@ -47,6 +47,7 @@ The table below is generated from this repo's **actual published releases**, so 
 | --- | --- | --- | --- | --- |
 | Stable | 25.10.4 (Goldeye) | `6.12.91-production+truenas` | Gasket 1.0-18.4 | [`v25.10.4-gasket1.0-18.4-r3`](https://github.com/truenas-community-sysexts/coral-pcie-support/releases/tag/v25.10.4-gasket1.0-18.4-r3) |
 | Stable | 25.10.3.1 (Goldeye) | `6.12.33-production+truenas` | Gasket 1.0-18.4 | [`v25.10.3.1-gasket1.0-18.4-r1`](https://github.com/truenas-community-sysexts/coral-pcie-support/releases/tag/v25.10.3.1-gasket1.0-18.4-r1) |
+| Stable | 25.10.3 (Goldeye) | `6.12.33-production+truenas` | Gasket 1.0-18.4 | [`v25.10.3-gasket1.0-18.4-r7`](https://github.com/truenas-community-sysexts/coral-pcie-support/releases/tag/v25.10.3-gasket1.0-18.4-r7) |
 | Preview (beta) | 26.0.0-BETA.2 (Halfmoon) | `6.18.23-production+truenas` | Gasket 1.0-18.4 | [`v26.0.0-BETA.2-gasket1.0-18.4-r6`](https://github.com/truenas-community-sysexts/coral-pcie-support/releases/tag/v26.0.0-BETA.2-gasket1.0-18.4-r6) |
 <!-- END supported-versions -->
 
