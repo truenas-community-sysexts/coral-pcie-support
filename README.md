@@ -31,7 +31,7 @@ The table below is generated from this repo's **actual published releases**, so 
 ### Prerequisites
 
 - A supported TrueNAS SCALE version (25.x stable or 26 beta) on amd64 — see [Supported TrueNAS versions](#supported-truenas-versions) above; the installer auto-detects yours
-- Coral PCIe TPU installed and visible (`lspci | grep 089a`)
+- Coral PCIe TPU installed and visible (`lspci -nnk | grep 089a`)
 - Root/sudo access
 - Internet access (to download the release)
 
