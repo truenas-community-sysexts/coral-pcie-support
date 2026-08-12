@@ -648,6 +648,15 @@ jobs:
           sha256sum coral.raw > coral.raw.sha256
           cat coral.raw.sha256
 
+      - name: Write kernel version asset
+        run: |
+          # coral.kver ships with the release so tooling can key on the exact
+          # kernel without parsing the release notes. install.sh still parses
+          # the notes: they are the only key that exists on releases published
+          # before this asset (releases are immutable, no backfilling).
+          printf '%s\n' "${REAL_KVER}" > coral.kver
+          cat coral.kver
+
       - name: Render release notes
         env:
           TRUENAS_VERSION: ${{ needs.resolve.outputs.truenas_version }}
@@ -713,6 +722,7 @@ jobs:
           path: |
             coral.raw
             coral.raw.sha256
+            coral.kver
             release-notes.md
 
   release:
@@ -740,6 +750,7 @@ jobs:
           files: |
             coral.raw
             coral.raw.sha256
+            coral.kver
             scripts/coral-lib.sh
             scripts/install.sh
             scripts/restore.sh
