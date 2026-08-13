@@ -435,7 +435,8 @@ if [ -n "$LOCAL_RAW" ]; then
     echo "Using local coral.raw: $LOCAL_RAW"
     cp "$LOCAL_RAW" "${WORK_DIR}/coral.raw"
 else
-    # Detect TrueNAS version
+    # Detect TrueNAS version: the version string decides the release channel
+    # (stable vs preview). It is never inferred from the kernel number.
     VERSION=$(midclt call system.info | python3 -c "
 import sys, json
 try:
@@ -445,14 +446,24 @@ except Exception as e:
     sys.exit(1)
 ") || { echo "ERROR: Failed to detect TrueNAS version"; exit 1; }
     [ -z "$VERSION" ] && { echo "ERROR: TrueNAS version is empty"; exit 1; }
-    echo "Detected TrueNAS version: ${VERSION}"
 
-    # Find matching release
-    echo "Searching for matching release..."
-    export VERSION
+    # The running kernel is the match key: kernel modules bind to the exact
+    # kernel string, and many TrueNAS versions share one kernel, so the right
+    # release is the one built for this kernel, whichever TrueNAS version
+    # produced it.
+    KVER=$(uname -r)
+    [ -z "$KVER" ] && { echo "ERROR: could not read the running kernel (uname -r)"; exit 1; }
+    echo "Detected TrueNAS version: ${VERSION} (kernel: ${KVER})"
+
+    # Find the release built for this kernel
+    echo "Searching for a release matching this kernel..."
+    export VERSION KVER
     RELEASE_TAG=$(curl -sS --max-time 30 "https://api.github.com/repos/${REPO}/releases?per_page=100" \
         | python3 -c "
-import sys, json, os
+# BEGIN release-selection (extracted verbatim by tests/test_release_selection.py;
+# single-quoted strings only, \x60 stands for backtick, no dollar signs: this
+# code lives inside a double-quoted bash string)
+import sys, json, os, re
 try:
     data = json.load(sys.stdin)
 except (json.JSONDecodeError, ValueError):
@@ -467,31 +478,46 @@ if isinstance(data, dict) and 'message' in data:
         print(f'GitHub API error: {msg}', file=sys.stderr)
     sys.exit(1)
 version = os.environ['VERSION']
-prefix = f'v{version}-'
-# A running BETA/RC version (e.g. 26.0.0-BETA.2) is the TrueNAS preview channel;
-# its matching sysext is published as a prerelease (preview builds are never
-# promoted to Latest), so a preview box must accept prereleases for its exact
-# version. A stable box still excludes prereleases: an unverified stable build
-# stays a prerelease until a human closes its hardware-test issue (promoting it
-# to Latest), and auto-installing one would bypass that gate. The prefix is the
-# full version string, so a stable box can never match a BETA/RC release.
+kver = os.environ['KVER']
+# Channel gate: a BETA/RC box is on the preview channel and may install
+# prereleases (preview builds are never promoted). A stable box only installs
+# promoted (non-prerelease) builds: an unverified stable build stays a
+# prerelease until a human closes its hardware-test issue, and auto-installing
+# one would bypass that gate.
 vu = version.upper()
 is_preview = ('-BETA' in vu) or ('-RC' in vu)
-matches = [r for r in data
-           if r.get('tag_name', '').startswith(prefix)
-           and not r.get('draft')
-           and (is_preview or not r.get('prerelease'))]
+ker_re = re.compile(r'Target kernel\s*\|\s*\x60([^\x60]+)\x60')
+def target_kernel(release):
+    m = ker_re.search(release.get('body') or '')
+    return m.group(1) if m else ''
+candidates = [r for r in data
+              if not r.get('draft') and (is_preview or not r.get('prerelease'))]
+matches = [r for r in candidates if target_kernel(r) == kver]
+matched_by_version = False
+if not matches:
+    # Releases published before the Target kernel row existed can only be
+    # matched the old way: exact TrueNAS version. Never fall back onto a
+    # release that DOES advertise a kernel: a version match with the wrong
+    # kernel would ship modules that cannot load.
+    prefix = f'v{version}-'
+    matches = [r for r in candidates
+               if r.get('tag_name', '').startswith(prefix) and not target_kernel(r)]
+    matched_by_version = True
 if not matches:
     channel = 'preview (beta)' if is_preview else 'stable'
-    print(f'No {channel} release found for TrueNAS version {version}', file=sys.stderr)
-    print('A matching sysext may not be built yet (the daily check builds within ~24h of an', file=sys.stderr)
+    print(f'No {channel} release found for kernel {kver} (TrueNAS {version}).', file=sys.stderr)
+    print('A build for this kernel may not exist yet (the daily check builds within ~24h of an', file=sys.stderr)
     print('ISO going live), or you can build one yourself from the repo. Available releases:', file=sys.stderr)
-    tags = [r.get('tag_name', '?') for r in data]
-    for t in tags:
-        print(f'  {t}', file=sys.stderr)
+    for r in candidates:
+        t = r.get('tag_name', '?')
+        k = target_kernel(r) or 'no kernel recorded'
+        print(f'  {t} ({k})', file=sys.stderr)
     sys.exit(1)
 matches.sort(key=lambda r: r.get('published_at') or r.get('created_at') or '', reverse=True)
+if matched_by_version:
+    print(f'NOTE: no release advertises kernel {kver}; matched by TrueNAS version instead.', file=sys.stderr)
 print(matches[0]['tag_name'], end='')
+# END release-selection
 ") || { echo "ERROR: Failed to query GitHub releases"; exit 1; }
 
     echo "Found release: ${RELEASE_TAG}"
