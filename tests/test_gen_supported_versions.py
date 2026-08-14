@@ -32,8 +32,10 @@ KERNEL_MAP = {"trains": {"Goldeye": {
 
 
 def rows_for(releases, kernel_map=KERNEL_MAP):
-    stable, preview = gsv.served_releases(gsv.parse_releases(releases))
-    return gsv.build_rows(stable, preview, kernel_map)
+    parsed = gsv.parse_releases(releases)
+    stable, preview = gsv.served_releases(parsed)
+    return gsv.build_rows(stable, preview, kernel_map,
+                          gsv.kernel_winners(parsed))
 
 
 class KernelRows(unittest.TestCase):
@@ -83,6 +85,47 @@ class KernelRows(unittest.TestCase):
                         kernel_map={})
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["versions"], "25.10.3")
+
+    def test_kernel_row_names_installer_winner_across_versions(self):
+        # install.sh serves the newest promoted release advertising the
+        # kernel, whichever version produced it; the row must name that
+        # release, not the row versions' own build.
+        rows = rows_for([
+            release("v25.10.4-gasket1.0-18.4-r37", "25.10.4", "Goldeye",
+                    "6.12.91-production+truenas",
+                    published="2026-01-01T00:00:00Z"),
+            release("v25.10.9-gasket1.0-18.4-r45", "25.10.9", "Goldeye",
+                    "6.12.91-production+truenas",
+                    published="2026-02-01T00:00:00Z"),
+        ])
+        row = [r for r in rows if r["kver"] == "6.12.91-production+truenas"
+               and r["versions"] == "25.10.4"][0]
+        self.assertEqual(row["tag"], "v25.10.9-gasket1.0-18.4-r45")
+
+    def test_unmapped_version_row_names_installer_winner(self):
+        rows = rows_for([
+            release("v25.10.9-gasket1.0-18.4-r37", "25.10.9", "Goldeye",
+                    "6.12.91-production+truenas",
+                    published="2026-01-01T00:00:00Z"),
+            release("v25.10.4-gasket1.0-18.4-r45", "25.10.4", "Goldeye",
+                    "6.12.91-production+truenas",
+                    published="2026-02-01T00:00:00Z"),
+        ])
+        own = [r for r in rows if r["versions"] == "25.10.9"][0]
+        self.assertEqual(own["tag"], "v25.10.4-gasket1.0-18.4-r45")
+
+    def test_legacy_release_keeps_own_row_not_kernel_row(self):
+        # A promoted release without a Target kernel row is only installable
+        # on its exact version via the fallback; it must not fill a kernel
+        # row it cannot serve.
+        rows = rows_for([release("v25.10.3-gasket1.0-18.4-r2", "25.10.3",
+                                 "Goldeye", None)])
+        kernel_row = [r for r in rows
+                      if r["kver"] == "6.12.33-production+truenas"][0]
+        self.assertEqual(kernel_row["tag"], "")
+        own = [r for r in rows if r["versions"] == "25.10.3" and not r["kver"]]
+        self.assertEqual(len(own), 1)
+        self.assertEqual(own[0]["tag"], "v25.10.3-gasket1.0-18.4-r2")
 
 
 class RenderTable(unittest.TestCase):

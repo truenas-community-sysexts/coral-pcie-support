@@ -114,9 +114,27 @@ def version_range(versions):
     return vs[0] if len(vs) == 1 else f"{vs[0]} - {vs[-1]}"
 
 
-def build_rows(stable, preview, kernel_map):
+def kernel_winners(releases_by_version):
+    """The release install.sh serves per advertised kernel: the newest
+    promoted (non-prerelease) release whose body records that kernel,
+    whichever TrueNAS version produced it. The table must name this release
+    on a kernel row, not the row versions' own newest build, or the table
+    and the installer disagree the moment a sibling rebuild lands."""
+    winners = {}
+    for rels in releases_by_version.values():
+        for r in rels:
+            if r["prerelease"] or not r["kver"]:
+                continue
+            cur = winners.get(r["kver"])
+            if cur is None or r["published"] > cur["published"]:
+                winners[r["kver"]] = r
+    return winners
+
+
+def build_rows(stable, preview, kernel_map, winners):
     """One row per known stable kernel (built or not), then stable releases
-    the map does not know (single-version rows), then preview releases."""
+    the kernel match cannot serve (single-version rows), then preview
+    releases."""
     by_kernel = {}
     mapped_versions = set()
     for train_versions in (kernel_map.get("trains") or {}).values():
@@ -126,17 +144,12 @@ def build_rows(stable, preview, kernel_map):
 
     keyed = []
     for kver, versions in by_kernel.items():
-        rels = []
         for v in versions:
             r = stable.get(v)
-            if not r:
-                continue
-            if r["kver"] and r["kver"] != kver:
+            if r and r["kver"] and r["kver"] != kver:
                 print(f"WARNING: release {r['tag']} records kernel {r['kver']} "
                       f"but the kernel map says {kver} for {v}", file=sys.stderr)
-            rels.append(r)
-        rels.sort(key=lambda x: x["published"], reverse=True)
-        r = rels[0] if rels else None
+        r = winners.get(kver)
         keyed.append((max(truenas_sort_key(v) for v in versions), {
             "channel": "Stable", "kver": kver,
             "versions": version_range(versions),
@@ -144,14 +157,22 @@ def build_rows(stable, preview, kernel_map):
             "tag": r["tag"] if r else "",
             "url": r["url"] if r else ""}))
 
-    # A served release for a version the map does not know (older train, or a
-    # listing gap) keeps its own single-version row so it never drops off.
     for version, r in stable.items():
-        if version in mapped_versions:
-            continue
-        keyed.append((truenas_sort_key(version), {
-            "channel": "Stable", "kver": r["kver"], "versions": version,
-            "driver": r["driver"], "tag": r["tag"], "url": r["url"]}))
+        if not r["kver"]:
+            # A legacy release without a Target kernel row only installs on
+            # its exact version (install.sh's fallback), so it keeps its own
+            # row naming itself no matter what the map says.
+            keyed.append((truenas_sort_key(version), {
+                "channel": "Stable", "kver": "", "versions": version,
+                "driver": r["driver"], "tag": r["tag"], "url": r["url"]}))
+        elif version not in mapped_versions:
+            # A version the map does not know (older train, or a listing gap)
+            # keeps its own row so it never drops off, but it names the
+            # release the installer would deliver for its kernel.
+            w = winners.get(r["kver"], r)
+            keyed.append((truenas_sort_key(version), {
+                "channel": "Stable", "kver": r["kver"], "versions": version,
+                "driver": w["driver"], "tag": w["tag"], "url": w["url"]}))
 
     keyed.sort(key=lambda t: t[0], reverse=True)
     rows = [row for _, row in keyed]
@@ -209,8 +230,9 @@ def main():
         print("WARNING: 100 releases returned; table may be truncated. Add pagination.",
               file=sys.stderr)
 
-    stable, preview = served_releases(parse_releases(data))
-    rows = build_rows(stable, preview, kernel_map)
+    parsed = parse_releases(data)
+    stable, preview = served_releases(parsed)
+    rows = build_rows(stable, preview, kernel_map, kernel_winners(parsed))
     table = render_table(rows)
 
     block = BEGIN_LINE + "\n" + "\n".join(table) + "\n" + END_MARK
