@@ -73,7 +73,14 @@ def parse_releases(data):
         else:
             tm = TAG_VER_RE.match(tag)
             if not tm:
-                continue  # cannot identify the TrueNAS version; skip it
+                # A release the table cannot identify (edited body, free-form
+                # manual publish) still gets served by install.sh's kernel
+                # match, so a silent skip makes the table lie. Warn loudly in
+                # the workflow log instead.
+                print(f"WARNING: cannot identify a TrueNAS version for "
+                      f"release {tag}; it will not appear in the table",
+                      file=sys.stderr)
+                continue
             version, train = tm.group(1), ""
         ker = KER_RE.search(body)
         drv = DRV_RE.search(body)

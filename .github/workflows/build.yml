@@ -775,10 +775,22 @@ jobs:
           REPO: ${{ github.repository }}
           REL_ID: ${{ steps.release.outputs.id }}
           MARK_LATEST: ${{ needs.resolve.outputs.mark_latest }}
+          TRUENAS_VERSION: ${{ needs.resolve.outputs.truenas_version }}
         run: |
-          if [ "$MARK_LATEST" = "true" ]; then
+          # A preview (BETA/RC) target always publishes as a prerelease, no
+          # matter what the dispatch says: k-tags carry no BETA marker, so the
+          # prerelease flag is the stable channel's primary lock against
+          # serving a beta build, and mark_latest must not be able to clear it.
+          IS_PREVIEW=false
+          case "$TRUENAS_VERSION" in
+            *-[Bb][Ee][Tt][Aa]*|*-[Rr][Cc]*) IS_PREVIEW=true ;;
+          esac
+          if [ "$MARK_LATEST" = "true" ] && [ "$IS_PREVIEW" != "true" ]; then
             gh api --method PATCH "repos/${REPO}/releases/${REL_ID}" -F draft=false -f make_latest=true
           else
+            if [ "$MARK_LATEST" = "true" ]; then
+              echo "::warning title=preview build::mark_latest ignored for preview target ${TRUENAS_VERSION}; published as prerelease"
+            fi
             gh api --method PATCH "repos/${REPO}/releases/${REL_ID}" -F draft=false -F prerelease=true
           fi
 
@@ -864,6 +876,7 @@ jobs:
                 ``,
                 `**Release:** [${tag}](${releaseUrl})`,
                 `<!-- release-tag: ${tag} -->`,
+                `<!-- preview-build: ${isPreview} -->`,
                 `**TrueNAS:** ${process.env.TRUENAS_VERSION}`,
                 `**Gasket:** ${process.env.GASKET_DRIVER}`,
                 ``,

@@ -52,6 +52,18 @@ jobs:
               return;
             }
 
+            // k-tags carry no BETA marker, so the machine marker build.yml
+            // writes next to release-tag is the reliable preview signal for
+            // kernel-tagged builds (the body check below is prose and could
+            // drift).
+            const pm = (issue.body || '').match(/<!--\s*preview-build:\s*(\S+?)\s*-->/);
+            if (pm && pm[1] === 'true') {
+              await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+                body: `\`${tag}\` is a TrueNAS preview build (per this issue's preview-build marker). Preview builds stay pre-releases and are never promoted to Latest, so no change was made.` });
+              core.info(`Skipping promotion of preview build ${tag} (issue marker).`);
+              return;
+            }
+
             let release;
             try {
               release = (await github.rest.repos.getReleaseByTag({ owner, repo, tag })).data;
@@ -113,33 +125,47 @@ jobs:
             if (!prNotes && !commits) changelog += '\n_Initial release._\n';
 
             // Only become "Latest" if this is the newest STABLE (non-prerelease)
-            // release. Two tag schemes coexist: kernel-keyed k6.12.91-... (all
-            // newer) and legacy version-keyed v25.10.4-... (all older), so the
-            // scheme is the first sort key and the dotted number the second.
-            // Promoting an OLDER build must not regress Latest. (GitHub's
-            // make_latest:'legacy' picks by date, which would wrongly favour the
-            // just-promoted older build, so compare explicitly.)
-            const parseTag = (t) => {
-              let m = (t || '').match(/^k(\d+(?:\.\d+)*)-/);
-              if (m) return { scheme: 1, num: m[1].split('.').map(Number) };
-              m = (t || '').match(/^v(\d+(?:\.\d+)*)-/);
-              if (m) return { scheme: 0, num: m[1].split('.').map(Number) };
-              return null;
+            // release. Releases rank by the kernel they target: k-tags encode
+            // it directly, v-tag releases record it in their Target kernel
+            // body row. A release with an unknown kernel (legacy body) ranks
+            // below any known kernel; two unknowns compare by v-tag TrueNAS
+            // version. This keeps the invariant across the tag-scheme
+            // migration: promoting an OLDER kernel never regresses Latest,
+            // whatever scheme the newer build uses. (GitHub's
+            // make_latest:'legacy' picks by date, which would wrongly favour
+            // the just-promoted older build, so compare explicitly.)
+            const numOf = (s) => {
+              const m = (s || '').match(/^(\d+(?:\.\d+)*)/);
+              return m ? m[1].split('.').map(Number) : null;
+            };
+            const rankOf = (r) => {
+              const t = r.tag_name || '';
+              let kernel = null;
+              const km = t.match(/^k(\d+(?:\.\d+)*)-/);
+              if (km) kernel = km[1].split('.').map(Number);
+              if (!kernel) kernel = numOf(((r.body || '').match(/Target kernel\s*\|\s*`([^`]+)`/) || [])[1]);
+              const vm = t.match(/^v(\d+(?:\.\d+)*)-/);
+              const ver = vm ? vm[1].split('.').map(Number) : null;
+              return (kernel || ver) ? { kernel, ver } : null;
             };
             const cmpNum = (a, b) => {
               const n = Math.max(a.length, b.length);
               for (let i = 0; i < n; i++) { const d = (a[i] || 0) - (b[i] || 0); if (d) return d; }
               return 0;
             };
-            const cmpTag = (a, b) => a.scheme !== b.scheme ? a.scheme - b.scheme : cmpNum(a.num, b.num);
-            const thisVer = parseTag(tag);
+            const cmpRank = (a, b) => {
+              if (a.kernel && b.kernel) return cmpNum(a.kernel, b.kernel);
+              if (a.kernel || b.kernel) return a.kernel ? 1 : -1;
+              return cmpNum(a.ver || [], b.ver || []);
+            };
+            const thisVer = rankOf(release);
             let newest = thisVer;  // this release is becoming non-prerelease
             for (const r of rels) {        // rels = all other non-draft releases
               if (r.prerelease) continue;  // betas / unverified builds can't be Latest
-              const v = parseTag(r.tag_name);
-              if (v && (!newest || cmpTag(v, newest) > 0)) newest = v;
+              const v = rankOf(r);
+              if (v && (!newest || cmpRank(v, newest) > 0)) newest = v;
             }
-            const makeLatest = (thisVer && newest && cmpTag(thisVer, newest) >= 0) ? 'true' : 'false';
+            const makeLatest = (thisVer && newest && cmpRank(thisVer, newest) >= 0) ? 'true' : 'false';
 
             await github.rest.repos.updateRelease({ owner, repo, release_id: release.id,
               prerelease: false, make_latest: makeLatest,
@@ -147,7 +173,7 @@ jobs:
 
             const latestNote = makeLatest === 'true'
               ? 'and set it as the latest release'
-              : `as a full release (Latest stays on the newer \`${newest ? newest.num.join('.') : ''}\`)`;
+              : `as a full release (Latest stays on the newer \`${newest ? (newest.kernel ? 'kernel ' + newest.kernel.join('.') : newest.ver.join('.')) : ''}\`)`;
             await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
               body: `✅ Verified — promoted [\`${tag}\`](${release.html_url}) ${latestNote}, and appended the changelog.` });
             core.info(`Promoted ${tag} (make_latest=${makeLatest}).`);

@@ -235,25 +235,52 @@ jobs:
 
           read -r -d '' COVERAGE_PY <<'PY' || true
           import sys, json, os, re
-          data = json.load(sys.stdin)
+          # gh api --paginate emits one JSON array per page, concatenated.
+          decoder = json.JSONDecoder()
+          text = sys.stdin.read()
+          data = []
+          pos = 0
+          while pos < len(text):
+              if text[pos].isspace():
+                  pos += 1
+                  continue
+              doc, pos = decoder.raw_decode(text, pos)
+              if isinstance(doc, list):
+                  data.extend(doc)
           kver = os.environ['NEW_KERNEL']
+          short = kver.split('-')[0]
           driver = os.environ['CURRENT_DRIVER']
           ker_re = re.compile(r'Target kernel\s*\|\s*`([^`]+)`')
+          hdr_re = re.compile(r'for TrueNAS SCALE (\S+)')
+          pre_re = re.compile(r'-(BETA|RC)', re.IGNORECASE)
           for r in data:
               if r.get('draft'):
                   continue
               tag = r.get('tag_name', '')
+              body = r.get('body') or ''
+              # Preview builds never promote, so install.sh's stable channel
+              # never serves them: they provide no coverage. Counting one here
+              # would suppress the stable build for its kernel forever (e.g. a
+              # GA release reusing the last RC's kernel).
+              hdr = hdr_re.search(body)
+              if pre_re.search(tag) or (hdr and pre_re.search(hdr.group(1))):
+                  continue
               # Only builds of the current driver count: a driver bump must
               # rebuild every kernel (the dispatch condition handles that).
               if f'gasket{driver}-' not in tag:
                   continue
-              m = ker_re.search(r.get('body') or '')
-              if m and m.group(1) == kver:
+              m = ker_re.search(body)
+              tk = m.group(1) if m else ''
+              # The Target kernel row is the primary key; a k-tag whose body
+              # lost the row still encodes its short kernel in the tag.
+              if tk == kver or (not tk and tag.startswith(f'k{short}-gasket')):
                   print(tag)
                   break
           PY
-          COVERING_TAG=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-            | python3 -c "$COVERAGE_PY")
+          # A transient API or parse failure must not fail the daily check:
+          # the safe default is covered=false (build it).
+          COVERING_TAG=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            | python3 -c "$COVERAGE_PY") || COVERING_TAG=""
 
           if [ -n "$COVERING_TAG" ]; then
             echo "::notice title=build skipped::${NEW_VERSION} ships kernel ${NEW_KERNEL}, already covered by release ${COVERING_TAG}. Tracked versions still update; the installer serves this version by kernel match."
@@ -475,6 +502,10 @@ jobs:
               s['truenas']['kernel']  = os.environ.get('NEW_KERNEL', '')
           if os.environ.get('PREVIEW_CHANGED') == 'true':
               s['truenas_preview']['version'] = os.environ['NEW_PREVIEW_VERSION']
+              # No resolver exists for preview kernels (betas publish no
+              # rootfs.mtree); reset to unknown so the field never carries the
+              # previous beta's kernel next to the new version.
+              s['truenas_preview']['kernel'] = ''
           if os.environ.get('GASKET_CHANGED') == 'true':
               s['gasket']['driver'] = os.environ['NEW_GASKET_DRIVER']
               s['gasket']['ref']    = os.environ['NEW_GASKET_REF']

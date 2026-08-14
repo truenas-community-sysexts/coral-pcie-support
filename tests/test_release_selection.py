@@ -65,6 +65,14 @@ class KernelMatch(unittest.TestCase):
         p = run_selection(rels, "25.10.5", "6.12.93-production+truenas")
         self.assertNotEqual(p.returncode, 0)
 
+    def test_stable_box_refuses_ktagged_preview_via_body_header(self):
+        # Kernel-keyed tags carry no BETA marker, so the second lock must
+        # read the notes header instead of the tag.
+        rels = [release("k6.12.93-gasket1.0-18.4-r44", "26.0.0-RC.1",
+                        kver="6.12.93-production+truenas", prerelease=False)]
+        p = run_selection(rels, "25.10.5", "6.12.93-production+truenas")
+        self.assertNotEqual(p.returncode, 0)
+
     def test_preview_box_gets_prerelease(self):
         p = run_selection(RELEASES, "26.0.0-BETA.2", "6.18.23-production+truenas")
         self.assertEqual(p.returncode, 0, p.stderr)

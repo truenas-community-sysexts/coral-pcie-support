@@ -528,19 +528,27 @@ kver = os.environ['KVER']
 vu = version.upper()
 is_preview = ('-BETA' in vu) or ('-RC' in vu)
 ker_re = re.compile(r'Target kernel\s*\|\s*\x60([^\x60]+)\x60')
+hdr_re = re.compile(r'for TrueNAS SCALE (\S+)')
 def target_kernel(release):
     m = ker_re.search(release.get('body') or '')
     return m.group(1) if m else ''
-def preview_tagged(release):
+def preview_release(release):
+    # Kernel-keyed tags (k6.18.23-...) carry no BETA marker, so the tag
+    # check alone stopped covering new preview builds; the notes header
+    # still names the TrueNAS version they were built for.
     tu = release.get('tag_name', '').upper()
-    return ('-BETA' in tu) or ('-RC' in tu)
-# A stable box also refuses BETA/RC-tagged releases outright. The old
+    if ('-BETA' in tu) or ('-RC' in tu):
+        return True
+    m = hdr_re.search(release.get('body') or '')
+    hv = m.group(1).upper() if m else ''
+    return ('-BETA' in hv) or ('-RC' in hv)
+# A stable box also refuses preview (BETA/RC) releases outright. The old
 # version-prefix match made installing one structurally impossible; with
 # kernel matching, the prerelease flag alone would be one mispublished
 # release away from serving a beta build to stable boxes.
 candidates = [r for r in data
               if not r.get('draft')
-              and (is_preview or (not r.get('prerelease') and not preview_tagged(r)))]
+              and (is_preview or (not r.get('prerelease') and not preview_release(r)))]
 matches = [r for r in candidates if target_kernel(r) == kver]
 if not matches:
     # Releases published before the Target kernel row existed can only be
@@ -577,11 +585,12 @@ print(matches[0]['tag_name'], end='')
     echo "Found release: ${RELEASE_TAG}"
 
     # Extract gasket driver version from the tag for informational purposes.
-    # Tags look like: v25.10.3.1-gasket1.0-18.4-r1
+    # Tags look like k6.12.91-gasket1.0-18.4-r41 (kernel-keyed) or
+    # v25.10.3.1-gasket1.0-18.4-r1 (legacy); both carry the gasket token.
     GASKET_VERSION=$(echo "$RELEASE_TAG" | sed -n 's/.*gasket\([0-9][0-9._-]*[0-9]\).*/\1/p')
     if [ -z "$GASKET_VERSION" ]; then
         echo "ERROR: Could not parse gasket driver version from release tag '${RELEASE_TAG}'." >&2
-        echo "  Expected format: v<truenas>-gasket<driver>-r<run>" >&2
+        echo "  Expected format: k<kernel>-gasket<driver>-r<run> (or legacy v<truenas>-gasket<driver>-r<run>)" >&2
         exit 1
     fi
     echo "Gasket driver version: ${GASKET_VERSION}"
