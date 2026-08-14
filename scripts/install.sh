@@ -458,24 +458,65 @@ except Exception as e:
     # Find the release built for this kernel
     echo "Searching for a release matching this kernel..."
     export VERSION KVER
-    RELEASE_TAG=$(curl -sS --max-time 30 "https://api.github.com/repos/${REPO}/releases?per_page=100" \
-        | python3 -c "
+    # Fetch every releases page. The legacy releases the version fallback needs
+    # are the oldest, exactly the ones a single newest-first page drops once
+    # the repo outgrows it. Each page's JSON array is appended as-is; the
+    # selection snippet merges them and reports API error objects.
+    RELEASES_JSON="${WORK_DIR}/releases.json"
+    : > "$RELEASES_JSON"
+    PAGE=1
+    while :; do
+        PAGE_JSON=$(curl -sS --max-time 30 "https://api.github.com/repos/${REPO}/releases?per_page=100&page=${PAGE}") \
+            || { echo "ERROR: Failed to query GitHub releases"; exit 1; }
+        printf '%s\n' "$PAGE_JSON" >> "$RELEASES_JSON"
+        # Only a full page can have more behind it; anything else (short page,
+        # API error object) ends the loop.
+        PAGE_LEN=$(printf '%s' "$PAGE_JSON" | python3 -c "
+import sys, json
+try:
+    doc = json.load(sys.stdin)
+except Exception:
+    print(0)
+else:
+    print(len(doc) if isinstance(doc, list) else 0)
+")
+        [ "$PAGE_LEN" -eq 100 ] || break
+        PAGE=$((PAGE + 1))
+    done
+    RELEASE_TAG=$(python3 -c "
 # BEGIN release-selection (extracted verbatim by tests/test_release_selection.py;
 # single-quoted strings only, \x60 stands for backtick, no dollar signs: this
 # code lives inside a double-quoted bash string)
 import sys, json, os, re
-try:
-    data = json.load(sys.stdin)
-except (json.JSONDecodeError, ValueError):
-    print('Failed to parse GitHub API response', file=sys.stderr)
-    sys.exit(1)
-if isinstance(data, dict) and 'message' in data:
-    msg = data['message']
-    if 'rate limit' in msg.lower():
-        print('GitHub API rate limit exceeded (60 requests/hour for unauthenticated calls).', file=sys.stderr)
-        print('Wait a few minutes and try again.', file=sys.stderr)
+# stdin carries one JSON array per fetched API page, concatenated.
+decoder = json.JSONDecoder()
+text = sys.stdin.read()
+data = []
+pos = 0
+while pos < len(text):
+    if text[pos].isspace():
+        pos += 1
+        continue
+    try:
+        doc, pos = decoder.raw_decode(text, pos)
+    except ValueError:
+        print('Failed to parse GitHub API response', file=sys.stderr)
+        sys.exit(1)
+    if isinstance(doc, dict) and 'message' in doc:
+        msg = doc['message']
+        if 'rate limit' in msg.lower():
+            print('GitHub API rate limit exceeded (60 requests/hour for unauthenticated calls).', file=sys.stderr)
+            print('Wait a few minutes and try again.', file=sys.stderr)
+        else:
+            print(f'GitHub API error: {msg}', file=sys.stderr)
+        sys.exit(1)
+    elif isinstance(doc, list):
+        data.extend(doc)
     else:
-        print(f'GitHub API error: {msg}', file=sys.stderr)
+        print('Failed to parse GitHub API response', file=sys.stderr)
+        sys.exit(1)
+if not text.strip():
+    print('Failed to parse GitHub API response', file=sys.stderr)
     sys.exit(1)
 version = os.environ['VERSION']
 kver = os.environ['KVER']
@@ -490,10 +531,17 @@ ker_re = re.compile(r'Target kernel\s*\|\s*\x60([^\x60]+)\x60')
 def target_kernel(release):
     m = ker_re.search(release.get('body') or '')
     return m.group(1) if m else ''
+def preview_tagged(release):
+    tu = release.get('tag_name', '').upper()
+    return ('-BETA' in tu) or ('-RC' in tu)
+# A stable box also refuses BETA/RC-tagged releases outright. The old
+# version-prefix match made installing one structurally impossible; with
+# kernel matching, the prerelease flag alone would be one mispublished
+# release away from serving a beta build to stable boxes.
 candidates = [r for r in data
-              if not r.get('draft') and (is_preview or not r.get('prerelease'))]
+              if not r.get('draft')
+              and (is_preview or (not r.get('prerelease') and not preview_tagged(r)))]
 matches = [r for r in candidates if target_kernel(r) == kver]
-matched_by_version = False
 if not matches:
     # Releases published before the Target kernel row existed can only be
     # matched the old way: exact TrueNAS version. Never fall back onto a
@@ -502,23 +550,29 @@ if not matches:
     prefix = f'v{version}-'
     matches = [r for r in candidates
                if r.get('tag_name', '').startswith(prefix) and not target_kernel(r)]
-    matched_by_version = True
+    if matches:
+        print(f'NOTE: no release advertises kernel {kver}; matched by TrueNAS version instead.', file=sys.stderr)
 if not matches:
     channel = 'preview (beta)' if is_preview else 'stable'
     print(f'No {channel} release found for kernel {kver} (TrueNAS {version}).', file=sys.stderr)
-    print('A build for this kernel may not exist yet (the daily check builds within ~24h of an', file=sys.stderr)
+    pending = [r for r in data
+               if not r.get('draft') and r.get('prerelease')
+               and target_kernel(r) == kver]
+    if pending and not is_preview:
+        print('A build for this kernel exists but is a prerelease awaiting hardware-test', file=sys.stderr)
+        print('promotion; it installs automatically once promoted.', file=sys.stderr)
+    print('Otherwise a build may not exist yet (the daily check builds within ~24h of an', file=sys.stderr)
     print('ISO going live), or you can build one yourself from the repo. Available releases:', file=sys.stderr)
-    for r in candidates:
+    for r in [x for x in data if not x.get('draft')]:
         t = r.get('tag_name', '?')
         k = target_kernel(r) or 'no kernel recorded'
-        print(f'  {t} ({k})', file=sys.stderr)
+        mark = ' (prerelease)' if r.get('prerelease') else ''
+        print(f'  {t} ({k}){mark}', file=sys.stderr)
     sys.exit(1)
 matches.sort(key=lambda r: r.get('published_at') or r.get('created_at') or '', reverse=True)
-if matched_by_version:
-    print(f'NOTE: no release advertises kernel {kver}; matched by TrueNAS version instead.', file=sys.stderr)
 print(matches[0]['tag_name'], end='')
 # END release-selection
-") || { echo "ERROR: Failed to query GitHub releases"; exit 1; }
+" < "$RELEASES_JSON") || { echo "ERROR: Failed to query GitHub releases"; exit 1; }
 
     echo "Found release: ${RELEASE_TAG}"
 
@@ -577,6 +631,31 @@ cp "$BUNDLED_PREINIT" "${WORK_DIR}/coral-preinit.sh"
 chmod +x "${WORK_DIR}/coral-preinit.sh"
 rm -rf "${WORK_DIR}/coral-sysext-unpack"
 echo "PREINIT script extracted"
+
+# --- Verify the image was built for the running kernel ---
+# The selected release should already match uname -r, but the legacy version
+# fallback and a hand-supplied coral.raw can still deliver modules built for a
+# different kernel, which can never load. Refuse before touching the system:
+# without this check the install "succeeds", registers persistence, and the
+# user reboots into a sysext whose modules never come up.
+echo ""
+echo "=== Verifying image kernel ==="
+RUNNING_KVER=$(uname -r)
+IMAGE_MODULE_DIRS=$(unsquashfs -l "${WORK_DIR}/coral.raw" 'usr/lib/modules/*' 2>/dev/null \
+    | sed -n 's|^squashfs-root/usr/lib/modules/\([^/]*\)/.*|\1|p' | sort -u)
+if ! printf '%s\n' "$IMAGE_MODULE_DIRS" | grep -qxF "$RUNNING_KVER"; then
+    echo "ERROR: this coral.raw was not built for the running kernel (${RUNNING_KVER})." >&2
+    if [ -n "$IMAGE_MODULE_DIRS" ]; then
+        echo "  Kernels in the image:" >&2
+        printf '%s\n' "$IMAGE_MODULE_DIRS" | sed 's/^/    /' >&2
+    else
+        echo "  The image contains no kernel module directory at all." >&2
+    fi
+    echo "  Its modules could never load. Get the build for this kernel from:" >&2
+    echo "  https://github.com/${REPO}/releases" >&2
+    exit 1
+fi
+echo "Image kernel matches running kernel (${RUNNING_KVER})"
 
 echo ""
 echo "=== Installing coral.raw ==="
