@@ -201,6 +201,69 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       # -----------------------------------------------------------------------
+      # Kernel coverage gate: the sysext binds to the kernel, not the TrueNAS
+      # version string, and point releases usually reuse the previous kernel.
+      # Resolve the new version's kernel from its rootfs.mtree manifest (small
+      # text fetch, no ISO); if a release for (kernel, current driver) already
+      # exists, the installer already serves this version by kernel match and
+      # no build is needed. An unresolvable kernel falls through to "build",
+      # the safe default.
+      # -----------------------------------------------------------------------
+      - name: Resolve kernel and check coverage
+        id: kernel
+        if: steps.truenas.outputs.changed == 'true'
+        env:
+          NEW_VERSION: ${{ steps.truenas.outputs.version }}
+          NEW_TRAIN: ${{ steps.truenas.outputs.train }}
+          CURRENT_DRIVER: ${{ steps.tracked.outputs.gasket_driver }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          MTREE_URL="https://download.truenas.com/TrueNAS-SCALE-${NEW_TRAIN}/${NEW_VERSION}/rootfs.mtree"
+          NEW_KERNEL=$(curl -fsSL "$MTREE_URL" 2>/dev/null \
+            | grep -oE 'usr/lib/modules/[0-9][^/ ]*production[^/ ]*' \
+            | head -1 | sed 's#usr/lib/modules/##') || true
+          echo "kernel=${NEW_KERNEL}" >> "$GITHUB_OUTPUT"
+
+          if [ -z "$NEW_KERNEL" ]; then
+            echo "Kernel for ${NEW_VERSION} not resolvable (no rootfs.mtree yet); building."
+            echo "covered=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Kernel for ${NEW_VERSION}: ${NEW_KERNEL}"
+          export NEW_KERNEL
+
+          read -r -d '' COVERAGE_PY <<'PY' || true
+          import sys, json, os, re
+          data = json.load(sys.stdin)
+          kver = os.environ['NEW_KERNEL']
+          driver = os.environ['CURRENT_DRIVER']
+          ker_re = re.compile(r'Target kernel\s*\|\s*`([^`]+)`')
+          for r in data:
+              if r.get('draft'):
+                  continue
+              tag = r.get('tag_name', '')
+              # Only builds of the current driver count: a driver bump must
+              # rebuild every kernel (the dispatch condition handles that).
+              if f'gasket{driver}-' not in tag:
+                  continue
+              m = ker_re.search(r.get('body') or '')
+              if m and m.group(1) == kver:
+                  print(tag)
+                  break
+          PY
+          COVERING_TAG=$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            | python3 -c "$COVERAGE_PY")
+
+          if [ -n "$COVERING_TAG" ]; then
+            echo "::notice title=build skipped::${NEW_VERSION} ships kernel ${NEW_KERNEL}, already covered by release ${COVERING_TAG}. Tracked versions still update; the installer serves this version by kernel match."
+            echo "covered=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No release covers kernel ${NEW_KERNEL} with driver ${CURRENT_DRIVER}; will build."
+            echo "covered=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # -----------------------------------------------------------------------
       # TrueNAS preview (beta) check: TrueNAS 26 betas are not published to
       # scale-build tags or download.truenas.com and ship no GITMANIFEST. They
       # live under a browsable channel (iso.sys.truenas.net/TrueNAS-26-BETA/).
@@ -366,7 +429,9 @@ jobs:
       # -----------------------------------------------------------------------
       - name: Resolve build runner
         id: runner
-        if: steps.truenas.outputs.changed == 'true' || steps.gasket.outputs.changed == 'true'
+        if: >-
+          (steps.truenas.outputs.changed == 'true' && steps.kernel.outputs.covered != 'true') ||
+          steps.gasket.outputs.changed == 'true'
         run: |
           if [ "${{ steps.truenas.outputs.changed }}" = "true" ]; then
             TRAIN="${{ steps.truenas.outputs.train }}"
@@ -390,6 +455,7 @@ jobs:
           TRUENAS_CHANGED: ${{ steps.truenas.outputs.changed }}
           NEW_TRUENAS_VERSION: ${{ steps.truenas.outputs.version }}
           NEW_TRAIN: ${{ steps.truenas.outputs.train }}
+          NEW_KERNEL: ${{ steps.kernel.outputs.kernel }}
           CURRENT_TRAIN: ${{ steps.tracked.outputs.train }}
           PREVIEW_CHANGED: ${{ steps.preview.outputs.changed }}
           NEW_PREVIEW_VERSION: ${{ steps.preview.outputs.version }}
@@ -406,6 +472,7 @@ jobs:
           if os.environ.get('TRUENAS_CHANGED') == 'true':
               s['truenas']['version'] = os.environ['NEW_TRUENAS_VERSION']
               s['truenas']['train']   = os.environ['NEW_TRAIN']
+              s['truenas']['kernel']  = os.environ.get('NEW_KERNEL', '')
           if os.environ.get('PREVIEW_CHANGED') == 'true':
               s['truenas_preview']['version'] = os.environ['NEW_PREVIEW_VERSION']
           if os.environ.get('GASKET_CHANGED') == 'true':
@@ -485,7 +552,9 @@ jobs:
       # beta/RC tags).
       # -----------------------------------------------------------------------
       - name: Trigger stable build
-        if: steps.truenas.outputs.changed == 'true' || steps.gasket.outputs.changed == 'true'
+        if: >-
+          (steps.truenas.outputs.changed == 'true' && steps.kernel.outputs.covered != 'true') ||
+          steps.gasket.outputs.changed == 'true'
         uses: actions/github-script@v9
         with:
           github-token: ${{ steps.app-token.outputs.token }}
