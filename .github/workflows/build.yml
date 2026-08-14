@@ -687,6 +687,8 @@ jobs:
           | Built on | `${RUNNER_IMAGE}` |
           | Source commit | [`${BUILD_SHA}`](https://github.com/${REPO}/commit/${BUILD_SHA}) |
 
+          This build targets kernel `${REAL_KVER}` and loads on any TrueNAS release shipping that exact kernel, not only ${TRUENAS_VERSION}. The README supported versions table lists the covered versions.
+
           **Target Device:** Google Coral PCIe TPU (M.2 / mini-PCIe). For USB Coral accelerators, no kernel module is needed.
 
           ### Included Components

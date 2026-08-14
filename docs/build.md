@@ -28,6 +28,27 @@ A single daily GitHub Actions workflow (`check-releases.yml`, 06:00 UTC) monitor
 
 If anything moved, the workflow writes the file in one commit and dispatches builds. A **gasket bump builds both** the stable (25.x) and preview (26-beta) targets, so each driver release ships both; a TrueNAS-only bump on one channel builds just that channel. All auto-builds publish without the "Latest" badge. Stable builds: verify on Coral PCIe hardware, then close the `hardware-test` issue to promote to Latest. **Preview (26-beta) builds stay pre-releases permanently and are never promoted to Latest** (they carry the `preview-hardware-test` label, which `promote.yml` ignores) so stable installs are unaffected; install them explicitly by tag.
 
+## Kernel-keyed builds
+
+A sysext's kernel modules bind to the exact kernel string (vermagic must
+equal `uname -r`), and TrueNAS point releases usually reuse the previous
+release's kernel. The pipeline is keyed accordingly:
+
+- check-releases.yml resolves a new stable version's kernel from its
+  rootfs.mtree manifest. If a release for that kernel (with the current
+  driver) already exists, no build is dispatched; tracked-versions.json
+  still updates and the installer serves the new version by kernel match.
+- A new kernel, a driver bump, or an unresolvable kernel always builds.
+- install.sh selects releases by matching `uname -r` against the release's
+  `Target kernel` row (and the `coral.kver` asset going forward).
+- tracked-versions.json records the kernel for the tracked stable and
+  preview versions. An empty string means unknown and always builds.
+- New releases are tagged `k<kernel>-gasket<driver>-r<run>` (short kernel,
+  e.g. `k6.12.91`). Releases published before the migration keep their
+  `v<version>` tags; both install the same way.
+- Hardware-test promotion is per build, which now means per kernel: one
+  verification covers every TrueNAS version sharing that kernel.
+
 ## Custom Builds
 
 If you need a build for a TrueNAS version that doesn't have a pre-built release, you can build your own using GitHub Actions, no local build environment needed.
