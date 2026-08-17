@@ -1,5 +1,36 @@
 # Troubleshooting
 
+## Is the TPU detected at all?
+
+Before debugging the driver, confirm the card is visible on the PCI bus:
+
+```bash
+lspci -nnk -d 1ac1:
+```
+
+A detected TPU prints something like:
+
+```
+01:00.0 System peripheral [0880]: Global Unichip Corp. Coral Edge TPU [1ac1:089a]
+	Kernel driver in use: apex
+	Kernel modules: apex
+```
+
+The `-nn` flag matters: without it, lspci prints only the device name from
+the host's pci.ids database, so grepping for the numeric ID `089a` finds
+nothing even when the TPU is present (issue #23). `-d 1ac1:` filters by the
+Global Unichip vendor ID and works even when pci.ids does not know the
+device name. `-k` shows whether the apex driver is bound.
+
+- **No output at all**: the card is not on the PCI bus. Check seating and
+  power; this is a hardware problem, not a driver problem.
+- **Output but no "Kernel driver in use" line**: the card is detected but
+  the driver did not bind. Check `dmesg | grep -iE 'gasket|apex'` and the
+  sections below.
+
+`install.sh --check` runs the same bus probe (via `/sys/bus/pci`) as its
+first check.
+
 ## Kernel version mismatch after a TrueNAS update
 
 After TrueNAS updates the underlying kernel, the boot-time PREINIT script
