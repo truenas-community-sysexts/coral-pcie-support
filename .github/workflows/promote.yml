@@ -128,12 +128,18 @@ jobs:
             // release. Releases rank by the kernel they target: k-tags encode
             // it directly, v-tag releases record it in their Target kernel
             // body row. A release with an unknown kernel (legacy body) ranks
-            // below any known kernel; two unknowns compare by v-tag TrueNAS
-            // version. This keeps the invariant across the tag-scheme
-            // migration: promoting an OLDER kernel never regresses Latest,
-            // whatever scheme the newer build uses. (GitHub's
-            // make_latest:'legacy' picks by date, which would wrongly favour
-            // the just-promoted older build, so compare explicitly.)
+            // below any known kernel. Two releases on the SAME kernel (a
+            // driver bump rebuilds every kernel, leaving two per kernel) rank
+            // by TrueNAS version when both tags carry one, then by run number
+            // (which also orders k-tags, which carry no version). The run
+            // number alone cannot come first: an older version rebuilt later
+            // has a HIGHER run than the Latest it must not displace. This
+            // keeps the invariant across the tag-scheme migration: promoting
+            // an older build never regresses Latest, whatever scheme the
+            // newer build uses. (GitHub's make_latest:'legacy' picks by date,
+            // which would wrongly favour the just-promoted older build, so
+            // compare explicitly.)
+            // BEGIN promote-ranking
             const numOf = (s) => {
               const m = (s || '').match(/^(\d+(?:\.\d+)*)/);
               return m ? m[1].split('.').map(Number) : null;
@@ -146,7 +152,9 @@ jobs:
               if (!kernel) kernel = numOf(((r.body || '').match(/Target kernel\s*\|\s*`([^`]+)`/) || [])[1]);
               const vm = t.match(/^v(\d+(?:\.\d+)*)-/);
               const ver = vm ? vm[1].split('.').map(Number) : null;
-              return (kernel || ver) ? { kernel, ver } : null;
+              const rm = t.match(/-r(\d+)$/);
+              const run = rm ? Number(rm[1]) : 0;
+              return (kernel || ver) ? { kernel, ver, run } : null;
             };
             const cmpNum = (a, b) => {
               const n = Math.max(a.length, b.length);
@@ -154,18 +162,32 @@ jobs:
               return 0;
             };
             const cmpRank = (a, b) => {
-              if (a.kernel && b.kernel) return cmpNum(a.kernel, b.kernel);
+              if (a.kernel && b.kernel) {
+                const dk = cmpNum(a.kernel, b.kernel);
+                if (dk) return dk;
+                if (a.ver && b.ver) {
+                  const dv = cmpNum(a.ver, b.ver);
+                  if (dv) return dv;
+                }
+                return a.run - b.run;
+              }
               if (a.kernel || b.kernel) return a.kernel ? 1 : -1;
-              return cmpNum(a.ver || [], b.ver || []);
+              return cmpNum(a.ver || [], b.ver || []) || (a.run - b.run);
             };
-            const thisVer = rankOf(release);
-            let newest = thisVer;  // this release is becoming non-prerelease
-            for (const r of rels) {        // rels = all other non-draft releases
-              if (r.prerelease) continue;  // betas / unverified builds can't be Latest
-              const v = rankOf(r);
-              if (v && (!newest || cmpRank(v, newest) > 0)) newest = v;
-            }
-            const makeLatest = (thisVer && newest && cmpRank(thisVer, newest) >= 0) ? 'true' : 'false';
+            const decideMakeLatest = (rel, others) => {
+              const thisVer = rankOf(rel);
+              let newest = thisVer;  // rel is becoming non-prerelease
+              for (const r of others) {
+                if (r.prerelease) continue;  // betas / unverified builds can't be Latest
+                const v = rankOf(r);
+                if (v && (!newest || cmpRank(v, newest) > 0)) newest = v;
+              }
+              const makeLatest = (thisVer && newest && cmpRank(thisVer, newest) >= 0) ? 'true' : 'false';
+              return { makeLatest, newest };
+            };
+            // END promote-ranking
+            // rels = all other non-draft releases
+            const { makeLatest, newest } = decideMakeLatest(release, rels);
 
             await github.rest.repos.updateRelease({ owner, repo, release_id: release.id,
               prerelease: false, make_latest: makeLatest,
