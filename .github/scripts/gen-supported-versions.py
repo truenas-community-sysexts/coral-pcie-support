@@ -13,8 +13,10 @@ from two sources:
     stdin): which kernels have an installable build, and which release the
     installer serves for them.
 
-A kernel with no release still gets a row (marked "not built yet"), so the
-table is a complete coverage map instead of a list of what happens to exist.
+A kernel with no release still gets a row: "not built yet" when no build
+exists, or the unpromoted build's tag marked "awaiting hardware-test
+promotion" when one is gated behind verification. The table is a complete
+coverage map instead of a list of what happens to exist.
 
 Usage (see .github/workflows/update-supported-versions.yml):
     gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
@@ -131,7 +133,27 @@ def kernel_winners(releases_by_version):
     return winners
 
 
-def build_rows(stable, preview, kernel_map, winners):
+def pending_builds(releases_by_version):
+    """The newest unpromoted stable build per kernel: a prerelease from a
+    non-BETA/RC version, still gated behind hardware-test promotion. The
+    installer's error message tells the user such a build exists and installs
+    once promoted; the table must say the same instead of "not built yet".
+    Preview (BETA/RC) builds never count: they are a separate channel, not a
+    stable build awaiting promotion."""
+    pending = {}
+    for rels in releases_by_version.values():
+        for r in rels:
+            if (not r["prerelease"] or not r["kver"]
+                    or is_preview_version(r["version"])):
+                continue
+            cur = pending.get(r["kver"])
+            if cur is None or r["published"] > cur["published"]:
+                pending[r["kver"]] = r
+    return pending
+
+
+def build_rows(stable, preview, kernel_map, winners, pending=None):
+    pending = pending or {}
     """One row per known stable kernel (built or not), then stable releases
     the kernel match cannot serve (single-version rows), then preview
     releases."""
@@ -150,12 +172,15 @@ def build_rows(stable, preview, kernel_map, winners):
                 print(f"WARNING: release {r['tag']} records kernel {r['kver']} "
                       f"but the kernel map says {kver} for {v}", file=sys.stderr)
         r = winners.get(kver)
+        p = pending.get(kver) if r is None else None
         keyed.append((max(truenas_sort_key(v) for v in versions), {
             "channel": "Stable", "kver": kver,
             "versions": version_range(versions),
-            "driver": r["driver"] if r else "",
+            "driver": r["driver"] if r else (p["driver"] if p else ""),
             "tag": r["tag"] if r else "",
-            "url": r["url"] if r else ""}))
+            "url": r["url"] if r else "",
+            "pending_tag": p["tag"] if p else "",
+            "pending_url": p["url"] if p else ""}))
 
     for version, r in stable.items():
         if not r["kver"]:
@@ -196,6 +221,10 @@ def render_table(rows):
             rel = f"[`{row['tag']}`]({row['url']})"
         elif row["tag"]:
             rel = f"`{row['tag']}`"
+        elif row.get("pending_tag"):
+            pt = (f"[`{row['pending_tag']}`]({row['pending_url']})"
+                  if row.get("pending_url") else f"`{row['pending_tag']}`")
+            rel = f"{pt} _(awaiting hardware-test promotion)_"
         else:
             rel = "_not built yet_"
         drv = row["driver"] or "—"
@@ -232,7 +261,8 @@ def main():
 
     parsed = parse_releases(data)
     stable, preview = served_releases(parsed)
-    rows = build_rows(stable, preview, kernel_map, kernel_winners(parsed))
+    rows = build_rows(stable, preview, kernel_map, kernel_winners(parsed),
+                      pending_builds(parsed))
     table = render_table(rows)
 
     block = BEGIN_LINE + "\n" + "\n".join(table) + "\n" + END_MARK
