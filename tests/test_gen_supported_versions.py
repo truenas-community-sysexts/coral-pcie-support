@@ -25,7 +25,8 @@ def rows_for(releases, kernel_map=KERNEL_MAP):
     parsed = gsv.parse_releases(releases)
     stable, preview = gsv.served_releases(parsed)
     return gsv.build_rows(stable, preview, kernel_map,
-                          gsv.kernel_winners(parsed))
+                          gsv.kernel_winners(parsed),
+                          gsv.pending_builds(parsed))
 
 
 class KernelRows(unittest.TestCase):
@@ -49,6 +50,28 @@ class KernelRows(unittest.TestCase):
                                  prerelease=True)])
         row = [r for r in rows if r["kver"] == "6.12.91-production+truenas"][0]
         self.assertEqual(row["tag"], "")
+
+    def test_unpromoted_stable_build_listed_as_pending(self):
+        # The installer's error message tells the user a build exists and is
+        # awaiting hardware-test promotion; the table must say the same, not
+        # "not built yet".
+        rows = rows_for([release("v25.10.4-gasket1.0-18.4-r40", "25.10.4",
+                                 "Goldeye", "6.12.91-production+truenas",
+                                 prerelease=True)])
+        row = [r for r in rows if r["kver"] == "6.12.91-production+truenas"][0]
+        self.assertEqual(row["pending_tag"], "v25.10.4-gasket1.0-18.4-r40")
+
+    def test_preview_build_is_not_pending_for_stable_kernel(self):
+        # A BETA/RC build is the preview channel, never a stable build
+        # awaiting promotion, so it must not fill a stable kernel's pending
+        # slot even if a body ever recorded a stable kernel.
+        rows = rows_for([release("v26.0.0-BETA.2-gasket1.0-18.4-r38",
+                                 "26.0.0-BETA.2", "Halfmoon",
+                                 "6.12.91-production+truenas",
+                                 prerelease=True)])
+        row = [r for r in rows if r["channel"] == "Stable"
+               and r["kver"] == "6.12.91-production+truenas"][0]
+        self.assertEqual(row["pending_tag"], "")
 
     def test_newest_kernel_row_first(self):
         rows = rows_for([])
@@ -122,6 +145,15 @@ class RenderTable(unittest.TestCase):
     def test_not_built_yet_cell(self):
         lines = gsv.render_table(rows_for([]))
         self.assertTrue(any("_not built yet_" in line for line in lines))
+
+    def test_pending_build_cell_names_release_not_not_built(self):
+        lines = gsv.render_table(rows_for(
+            [release("v25.10.4-gasket1.0-18.4-r40", "25.10.4", "Goldeye",
+                     "6.12.91-production+truenas", prerelease=True)]))
+        line = [ln for ln in lines if "6.12.91" in ln][0]
+        self.assertIn("v25.10.4-gasket1.0-18.4-r40", line)
+        self.assertIn("awaiting hardware-test promotion", line)
+        self.assertNotIn("not built yet", line)
 
     def test_version_range_helper(self):
         self.assertEqual(gsv.version_range(["25.10.0"]), "25.10.0")
