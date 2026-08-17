@@ -15,6 +15,22 @@
 
 set -euo pipefail
 
+# tpu_on_pci_bus: succeeds if a Coral PCIe TPU (1ac1:089a) is visible on the
+# PCI bus. Reads /sys directly instead of lspci: the numeric IDs are always
+# there, while lspci output depends on the host's pci.ids knowing the device
+# (see issue #23, where `lspci | grep 089a` matched nothing on a working TPU).
+tpu_on_pci_bus() {
+    local dev
+    for dev in /sys/bus/pci/devices/*; do
+        [ -r "${dev}/vendor" ] || continue
+        if [ "$(cat "${dev}/vendor" 2>/dev/null)" = "0x1ac1" ] && \
+           [ "$(cat "${dev}/device" 2>/dev/null)" = "0x089a" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 # do_check: read-only probe of an existing install. Exits 0 if all checks
 # pass (warnings allowed), 1 if any check fails. Used by --check.
 do_check() {
@@ -36,15 +52,29 @@ do_check() {
     echo "=== Coral TPU install status ==="
     echo ""
 
-    # 1. PCIe device node
-    if [ -e /dev/apex_0 ]; then
-        record_pass "Device /dev/apex_0 present"
+    # 1. TPU visible on the PCI bus. Checked first: every later failure reads
+    # differently depending on whether the hardware is there at all.
+    local tpu_on_bus=0
+    if tpu_on_pci_bus; then
+        tpu_on_bus=1
+        record_pass "Coral PCIe TPU visible on the PCI bus (1ac1:089a)"
     else
-        record_fail "Device /dev/apex_0 not present" \
-            "is the Coral PCIe TPU seated, and was the system rebooted after install?"
+        record_fail "No Coral PCIe TPU visible on the PCI bus" \
+            "check the card is seated and powered; verify with: lspci -nnk -d 1ac1:"
     fi
 
-    # 2. Kernel modules loaded (both gasket and apex required)
+    # 2. PCIe device node
+    if [ -e /dev/apex_0 ]; then
+        record_pass "Device /dev/apex_0 present"
+    elif [ "$tpu_on_bus" = "1" ]; then
+        record_fail "Device /dev/apex_0 not present" \
+            "TPU is on the bus but the driver has not bound it; check: dmesg | grep -iE 'gasket|apex'"
+    else
+        record_fail "Device /dev/apex_0 not present" \
+            "expected while no TPU is visible on the PCI bus; fix the hardware first"
+    fi
+
+    # 3. Kernel modules loaded (both gasket and apex required)
     local gasket_loaded=0 apex_loaded=0
     if lsmod 2>/dev/null | awk '{print $1}' | grep -qx gasket; then
         gasket_loaded=1
@@ -62,7 +92,7 @@ do_check() {
             "re-run install.sh or manually insmod the modules under /usr/lib/modules/\$(uname -r)/extra/"
     fi
 
-    # 3. Activation symlink present and resolves to an image. It lives on tmpfs
+    # 4. Activation symlink present and resolves to an image. It lives on tmpfs
     # (/run/extensions), so the PREINIT script recreates it on every boot; a
     # missing symlink is a warning, not a hard failure.
     if [ -L /run/extensions/coral.raw ] && [ -f /run/extensions/coral.raw ]; then
@@ -72,7 +102,7 @@ do_check() {
             "the PREINIT script recreates it on boot; reboot or re-run install.sh"
     fi
 
-    # 4. Sysext merged into /usr
+    # 5. Sysext merged into /usr
     if systemd-sysext list 2>/dev/null | awk '{print $1}' | grep -qx coral; then
         record_pass "Sysext merged into /usr"
     else
@@ -80,7 +110,7 @@ do_check() {
             "the PREINIT script merges it on boot; check 'systemctl status systemd-sysext'"
     fi
 
-    # 5. Persistent config dir (same resolver as install path)
+    # 6. Persistent config dir (same resolver as install path)
     local persist_dir=""
     if resolve_persist_dir; then
         persist_dir="$PERSIST_DIR"
@@ -90,21 +120,21 @@ do_check() {
             "re-run install.sh with --pool=NAME or --persist-path=PATH"
     fi
 
-    # 6. Backup coral.raw on persistent pool
+    # 7. Backup coral.raw on persistent pool
     if [ -n "$persist_dir" ] && [ -f "${persist_dir}/coral.raw" ]; then
         record_pass "Backup ${persist_dir}/coral.raw present"
     elif [ -n "$persist_dir" ]; then
         record_fail "Backup coral.raw missing in ${persist_dir}" "re-run install.sh"
     fi
 
-    # 7. PREINIT script on disk
+    # 8. PREINIT script on disk
     if [ -n "$persist_dir" ] && [ -x "${persist_dir}/coral-preinit.sh" ]; then
         record_pass "PREINIT script ${persist_dir}/coral-preinit.sh present and executable"
     elif [ -n "$persist_dir" ]; then
         record_fail "PREINIT script missing or not executable in ${persist_dir}" "re-run install.sh"
     fi
 
-    # 8. PREINIT registered with TrueNAS middleware (read-only midclt query)
+    # 9. PREINIT registered with TrueNAS middleware (read-only midclt query)
     if command -v midclt >/dev/null 2>&1; then
         local lookup script_when script_enabled
         lookup=$(coral_init_script_lookup)
@@ -131,7 +161,7 @@ do_check() {
             "this script must run on TrueNAS SCALE"
     fi
 
-    # 9. Kernel module paths match running kernel (check both gasket.ko and apex.ko)
+    # 10. Kernel module paths match running kernel (check both gasket.ko and apex.ko)
     local running_kver gasket_ko apex_ko
     running_kver=$(uname -r)
     gasket_ko="/usr/lib/modules/${running_kver}/extra/gasket.ko"
@@ -146,7 +176,7 @@ do_check() {
             "download a new coral.raw release matching this kernel"
     fi
 
-    # 10. PREINIT script result on last boot.
+    # 11. PREINIT script result on last boot.
     # coral-preinit.sh logs via `logger -t coral-preinit`, so journalctl can
     # filter by tag. The script ends with a "Done" sentinel on success; any
     # ERROR: line in the same boot indicates a failure path was hit.
@@ -630,10 +660,14 @@ echo ""
 # Verify
 if [ -e /dev/apex_0 ]; then
     echo "Device /dev/apex_0 detected!"
-else
-    echo "Device /dev/apex_0 not found."
-    echo "  - Ensure a Coral PCIe TPU is installed"
+elif tpu_on_pci_bus; then
+    echo "Device /dev/apex_0 not found, but the Coral TPU is visible on the PCI bus."
+    echo "  - The driver did not bind; inspect: dmesg | grep -iE 'gasket|apex'"
     echo "  - Try rebooting the system"
+else
+    echo "Device /dev/apex_0 not found and no Coral TPU is visible on the PCI bus."
+    echo "  - Check the card is seated and powered (verify with: lspci -nnk -d 1ac1:)"
+    echo "  - Then reboot the system"
 fi
 
 # ==========================================================================
