@@ -223,7 +223,6 @@ jobs:
           NEW_KERNEL=$(curl -fsSL "$MTREE_URL" 2>/dev/null \
             | grep -oE 'usr/lib/modules/[0-9][^/ ]*production[^/ ]*' \
             | head -1 | sed 's#usr/lib/modules/##') || true
-          echo "kernel=${NEW_KERNEL}" >> "$GITHUB_OUTPUT"
 
           if [ -z "$NEW_KERNEL" ]; then
             echo "Kernel for ${NEW_VERSION} not resolvable (no rootfs.mtree yet); building."
@@ -482,7 +481,6 @@ jobs:
           TRUENAS_CHANGED: ${{ steps.truenas.outputs.changed }}
           NEW_TRUENAS_VERSION: ${{ steps.truenas.outputs.version }}
           NEW_TRAIN: ${{ steps.truenas.outputs.train }}
-          NEW_KERNEL: ${{ steps.kernel.outputs.kernel }}
           CURRENT_TRAIN: ${{ steps.tracked.outputs.train }}
           PREVIEW_CHANGED: ${{ steps.preview.outputs.changed }}
           NEW_PREVIEW_VERSION: ${{ steps.preview.outputs.version }}
@@ -499,13 +497,8 @@ jobs:
           if os.environ.get('TRUENAS_CHANGED') == 'true':
               s['truenas']['version'] = os.environ['NEW_TRUENAS_VERSION']
               s['truenas']['train']   = os.environ['NEW_TRAIN']
-              s['truenas']['kernel']  = os.environ.get('NEW_KERNEL', '')
           if os.environ.get('PREVIEW_CHANGED') == 'true':
               s['truenas_preview']['version'] = os.environ['NEW_PREVIEW_VERSION']
-              # No resolver exists for preview kernels (betas publish no
-              # rootfs.mtree); reset to unknown so the field never carries the
-              # previous beta's kernel next to the new version.
-              s['truenas_preview']['kernel'] = ''
           if os.environ.get('GASKET_CHANGED') == 'true':
               s['gasket']['driver'] = os.environ['NEW_GASKET_DRIVER']
               s['gasket']['ref']    = os.environ['NEW_GASKET_REF']

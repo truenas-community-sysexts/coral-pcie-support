@@ -56,13 +56,6 @@ tn_train = truenas.get("train")
 if not isinstance(tn_train, str) or not train_re.match(tn_train):
     fail(f"'truenas.train' missing or malformed (got {tn_train!r}); expected capitalized word (e.g. Goldeye)")
 
-# Kernel strings look like 6.12.33-production+truenas. Empty string is legal:
-# it means "unknown", and check-releases treats unknown as "build it".
-kernel_re = re.compile(r"^\d+\.\d+[^ /]*$")
-tn_kernel = truenas.get("kernel")
-if not isinstance(tn_kernel, str) or (tn_kernel and not kernel_re.match(tn_kernel)):
-    fail(f"'truenas.kernel' missing or malformed (got {tn_kernel!r}); expected a kernel release string or ''")
-
 # Preview channel: tracks the latest TrueNAS beta/RC (e.g. 26.0.0-BETA.2) on
 # iso.sys.truenas.net. These ISOs publish no GITMANIFEST, so the runner is
 # pinned here rather than auto-resolved, and the ISO URL is derived from
@@ -90,10 +83,6 @@ if not isinstance(pv_channel, str) or not pv_channel.startswith("https://"):
 if not pv_channel.endswith("/"):
     fail(f"'truenas_preview.channel_url' must end with '/' (got {pv_channel!r}); the ISO URL is derived as <channel_url><version>/TrueNAS-<version>.iso")
 
-pv_kernel = preview.get("kernel")
-if not isinstance(pv_kernel, str) or (pv_kernel and not kernel_re.match(pv_kernel)):
-    fail(f"'truenas_preview.kernel' missing or malformed (got {pv_kernel!r}); expected a kernel release string or ''")
-
 gasket = data.get("gasket")
 if not isinstance(gasket, dict):
     fail("'gasket' key missing or not an object")
@@ -112,5 +101,5 @@ if not isinstance(g_repo, str) or not g_repo.strip():
 if "/" not in g_repo:
     fail(f"'gasket.repo' must be owner/name format (got {g_repo!r})")
 
-print(f"tracked-versions OK: TrueNAS {tn_version} ({tn_train}, kernel {tn_kernel or 'unknown'}), preview {pv_version} ({pv_train}, runner {pv_runner}, kernel {pv_kernel or 'unknown'}), gasket driver {g_driver} (ref: {g_ref}, repo: {g_repo})")
+print(f"tracked-versions OK: TrueNAS {tn_version} ({tn_train}), preview {pv_version} ({pv_train}, runner {pv_runner}), gasket driver {g_driver} (ref: {g_ref}, repo: {g_repo})")
 PY

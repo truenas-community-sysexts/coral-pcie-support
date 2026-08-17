@@ -1,15 +1,13 @@
 {
   "truenas": {
     "version": "25.10.6",
-    "train": "Goldeye",
-    "kernel": "6.12.99-production+truenas"
+    "train": "Goldeye"
   },
   "truenas_preview": {
     "version": "26.0.0-BETA.2",
     "train": "Halfmoon",
     "runner": "ubuntu-24.04",
-    "channel_url": "https://iso.sys.truenas.net/TrueNAS-26-BETA/",
-    "kernel": "6.18.23-production+truenas"
+    "channel_url": "https://iso.sys.truenas.net/TrueNAS-26-BETA/"
   },
   "gasket": {
     "driver": "1.0-18.4",
