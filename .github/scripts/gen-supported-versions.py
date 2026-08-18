@@ -41,6 +41,11 @@ DRV_RE = re.compile(r"\|\s*(Gasket driver|HailoRT driver|MemryX SDK)\s*\|\s*`([^
 # version out of the tag (vX-<drivertoken>...). The version itself may contain
 # dashes (26.0.0-BETA.2), so stop at the first known driver token.
 TAG_VER_RE = re.compile(r"^v(.+?)-(?:gasket|hailo|hailort|memryx)", re.IGNORECASE)
+# Kernel-keyed tags encode the short kernel instead of a TrueNAS version
+# (k6.12.91-gasket1.0-18.4-r3). When such a release's body lost its rows,
+# the tag is the only kernel signal left (install.sh serves it by this tag).
+KTAG_KVER_RE = re.compile(r"^k(\d+(?:\.\d+)*)-(?:gasket|hailo|hailort|memryx)",
+                          re.IGNORECASE)
 
 
 def truenas_sort_key(version):
@@ -74,7 +79,15 @@ def parse_releases(data):
             version, train = hdr.group(1).strip(), hdr.group(2).strip()
         else:
             tm = TAG_VER_RE.match(tag)
-            if not tm:
+            if tm:
+                version, train = tm.group(1), ""
+            elif KTAG_KVER_RE.match(tag):
+                # A k-tagged release whose body lost its header names no
+                # TrueNAS version, but its tag still names the kernel;
+                # resolve_ktag_kernels() fills the full kernel string in so
+                # the release can take its kernel row.
+                version, train = "", ""
+            else:
                 # A release the table cannot identify (edited body, free-form
                 # manual publish) still gets served by install.sh's kernel
                 # match, so a silent skip makes the table lie. Warn loudly in
@@ -83,13 +96,14 @@ def parse_releases(data):
                       f"release {tag}; it will not appear in the table",
                       file=sys.stderr)
                 continue
-            version, train = tm.group(1), ""
         ker = KER_RE.search(body)
         drv = DRV_RE.search(body)
+        km = KTAG_KVER_RE.match(tag)
         releases_by_version.setdefault(version, []).append({
             "version": version,
             "train": train,
             "kver": ker.group(1) if ker else "",
+            "kshort": km.group(1) if km else "",
             # "Gasket driver" -> "Gasket 1.0-18.4"; "MemryX SDK" -> "MemryX SDK 2.1"
             "driver": f"{drv.group(1).replace(' driver', '')} {drv.group(2)}" if drv else "",
             "prerelease": bool(r.get("prerelease")),
@@ -100,6 +114,31 @@ def parse_releases(data):
     return releases_by_version
 
 
+def resolve_ktag_kernels(releases_by_version, kernel_map):
+    """Fill in the kernel for k-tagged releases whose body lost the Target
+    kernel row. The tag encodes only the short kernel (k6.12.91-...); the
+    kernel map recovers the full string install.sh matches on, so the
+    release can take its kernel row instead of leaving it "not built yet"
+    while the installer serves it. Only promoted releases resolve: with the
+    body gone, an unpromoted k-tag cannot be told apart from a preview
+    build (check-kernel-coverage.py applies the same rule)."""
+    full_by_short = {}
+    for train_versions in (kernel_map.get("trains") or {}).values():
+        for kver in train_versions.values():
+            full_by_short[kver.split("-")[0]] = kver
+    for rels in releases_by_version.values():
+        for r in rels:
+            if r["kver"] or not r["kshort"] or r["prerelease"]:
+                continue
+            full = full_by_short.get(r["kshort"], "")
+            if full:
+                r["kver"] = full
+            elif not r["version"]:
+                print(f"WARNING: release {r['tag']} has no Target kernel row "
+                      f"and its tag kernel {r['kshort']} is not in the kernel "
+                      "map; it will not appear in the table", file=sys.stderr)
+
+
 def served_releases(releases_by_version):
     """The one release install.sh serves per version:
       * Preview (BETA/RC) versions -> newest release (prereleases allowed).
@@ -108,6 +147,10 @@ def served_releases(releases_by_version):
         gated behind hardware-test promotion), so it is omitted until then."""
     stable, preview = {}, {}
     for version, rels in releases_by_version.items():
+        if not version:
+            # k-tagged releases with a lost body have no TrueNAS version to
+            # serve by; they only feed kernel_winners via their tag kernel.
+            continue
         rels.sort(key=lambda x: x["published"], reverse=True)
         if is_preview_version(version):
             preview[version] = rels[0]
@@ -270,6 +313,7 @@ def main():
               file=sys.stderr)
 
     parsed = parse_releases(data)
+    resolve_ktag_kernels(parsed, kernel_map)
     stable, preview = served_releases(parsed)
     rows = build_rows(stable, preview, kernel_map, kernel_winners(parsed),
                       pending_builds(parsed))
