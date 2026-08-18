@@ -579,7 +579,19 @@ def preview_release(release):
 candidates = [r for r in data
               if not r.get('draft')
               and (is_preview or (not r.get('prerelease') and not preview_release(r)))]
-matches = [r for r in candidates if target_kernel(r) == kver]
+# The Target kernel notes row is the primary key. A k-tag whose body lost
+# the row still encodes its short kernel in the tag; check-releases counts
+# such a release as covering its kernel (and skips builds for it), so the
+# installer must serve it by the same rule. A body row always wins over the
+# tag: it is written from REAL_KVER at build time, so a tag/body mismatch
+# means a mispublished release that must not be served.
+short = kver.split('-')[0]
+def kernel_match(release):
+    tk = target_kernel(release)
+    if tk:
+        return tk == kver
+    return release.get('tag_name', '').startswith(f'k{short}-gasket')
+matches = [r for r in candidates if kernel_match(r)]
 if not matches:
     # Releases published before the Target kernel row existed can only be
     # matched the old way: exact TrueNAS version. Never fall back onto a

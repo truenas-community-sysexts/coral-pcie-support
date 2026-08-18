@@ -40,8 +40,10 @@ release's kernel. The pipeline is keyed accordingly:
   still updates and the installer serves the new version by kernel match.
 - A new kernel, a driver bump, or an unresolvable kernel always builds.
 - install.sh selects releases by matching `uname -r` against the release's
-  `Target kernel` row, then verifies the downloaded image's own
-  `usr/lib/modules/<kernel>` directory before installing. The `coral.kver`
+  `Target kernel` row, falling back to the short kernel encoded in a k-tag
+  when a body lost its row (the same rule check-releases' coverage gate
+  uses), then verifies the downloaded image's own `usr/lib/modules/<kernel>`
+  directory before installing. The `coral.kver`
   asset carries the same kernel string in machine-readable form for
   external tooling; install.sh does not read it (the notes row is the one
   key every release has, since older immutable releases predate the asset).
