@@ -73,6 +73,19 @@ class KernelRows(unittest.TestCase):
                and r["kver"] == "6.12.91-production+truenas"][0]
         self.assertEqual(row["pending_tag"], "")
 
+    def test_mispublished_preview_never_wins_stable_kernel_row(self):
+        # A BETA/RC build published with prerelease=false (the mispublish
+        # install.sh's preview locks defend against) must not become a stable
+        # kernel row's release: install.sh never serves a preview build to
+        # stable boxes, whatever kernel its body records.
+        rows = rows_for([release("v26.0.0-BETA.2-gasket1.0-18.4-r38",
+                                 "26.0.0-BETA.2", "Halfmoon",
+                                 "6.12.91-production+truenas",
+                                 prerelease=False)])
+        row = [r for r in rows if r["channel"] == "Stable"
+               and r["kver"] == "6.12.91-production+truenas"][0]
+        self.assertEqual(row["tag"], "")
+
     def test_newest_kernel_row_first(self):
         rows = rows_for([])
         self.assertEqual(rows[0]["kver"], "6.12.91-production+truenas")

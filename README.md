@@ -15,9 +15,9 @@ A systemd-sysext package that adds [Google Coral](https://coral.ai/) PCIe TPU su
 
 ### Supported TrueNAS versions
 
-Builds come in two channels: **Stable** (promoted to the **Latest** release) and **Preview** (TrueNAS 26 beta, published as a **pre-release** — experimental, not for production).
+Builds come in two channels: **Stable** (promoted to the **Latest** release) and **Preview** (TrueNAS 26 beta, published as a **pre-release**: experimental, not for production).
 
-The table below is generated from this repo's **actual published releases**, so it always reflects exactly what is installable right now. If your version isn't listed, there's no build for it yet — check back after the daily build, or [build it yourself](docs/build.md).
+The table below is generated from the TrueNAS kernel map and this repo's **actual published releases**, so it lists every known stable kernel, not just the ones with a build. A row with a linked release is installable right now; a row without one is not, so check back after the daily build, or [build it yourself](docs/build.md).
 
 A build is keyed to the kernel, not the TrueNAS version: TrueNAS point releases often ship the same kernel, so one release covers every version listed on its row. Rows marked "not built yet" are kernels no release targets so far.
 
