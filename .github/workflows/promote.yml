@@ -174,13 +174,8 @@ jobs:
                 return a.run - b.run;
               }
               if (a.kernel || b.kernel) {
-                // A k-tag (kernel, no version) against a version-only rank
-                // (body lost its Target kernel row) shares no dimension, so
-                // publication date decides: promoting an OLD build must not
-                // displace a newer damaged-body Latest. When both carry a
-                // version the known kernel wins outright: version-only there
-                // means a legacy pre-migration body, which any kernel-keyed
-                // build supersedes.
+                // kernel-only vs version-only shares no dimension: date
+                // decides (see comment above); otherwise known kernel wins.
                 if (!(a.ver && b.ver)) {
                   const dd = a.date - b.date;
                   if (dd) return dd;

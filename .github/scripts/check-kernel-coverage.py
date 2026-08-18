@@ -6,25 +6,22 @@ Reads the repo's releases on stdin (gh api --paginate: one JSON array per
 page, concatenated) and reports what covers the kernel in $NEW_KERNEL for
 the driver in $CURRENT_DRIVER:
 
-    promoted <tag>   a promoted (non-prerelease) release install.sh's stable
-                     channel serves for this kernel: no build is needed and
+    promoted <tag>   served by install.sh's stable channel: no build needed,
                      the tracked version may advance.
-    pending <tag>    an unpromoted stable build awaiting hardware-test
-                     promotion: no duplicate build is needed, but the tracked
-                     version must NOT advance. Advancing would consume the
-                     one-shot version-changed event, so deleting the build
-                     after a failed hardware test would leave the kernel with
-                     no rebuild path.
+    pending <tag>    unpromoted stable build awaiting hardware test: no
+                     duplicate build, but the tracked version must NOT
+                     advance (that consumes the one-shot version-changed
+                     event, so deleting the build after a failed hardware
+                     test would leave the kernel with no rebuild path).
     (nothing)        no coverage: build.
 
-Preview (BETA/RC) builds never provide coverage: they are never promoted, so
-install.sh's stable channel never serves them (a GA release reusing the last
-RC's kernel still needs its own stable build). A k-tagged release whose body
-lost the Target kernel row counts only once promoted: an unpromoted one
-cannot be told apart from a preview build, and the safe default is to build.
+Preview (BETA/RC) builds never count: they never promote, so the stable
+channel never serves them. A k-tag whose body lost the Target kernel row
+counts only once promoted: unpromoted, it cannot be told apart from a
+preview build, and the safe default is to build.
 
-The matching rules mirror install.sh's release-selection snippet;
-tests/test_kernel_coverage.py holds both to the shared release fixtures.
+Matching rules mirror install.sh's release-selection snippet;
+tests/test_kernel_coverage.py holds both to the shared fixtures.
 """
 import json
 import os
@@ -69,9 +66,8 @@ def main():
         m = ker_re.search(body)
         tk = m.group(1) if m else ''
         promoted = not r.get('prerelease')
-        # The Target kernel row is the primary key; a k-tag whose body lost
-        # the row still encodes its short kernel in the tag, but only counts
-        # once promoted (see module docstring).
+        # Body row is the primary key; the k-tag fallback needs promoted
+        # (see module docstring).
         if tk == kver or (not tk and promoted
                           and tag.startswith(f'k{short}-gasket')):
             if promoted:

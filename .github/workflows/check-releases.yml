@@ -205,11 +205,9 @@ jobs:
       # version string, and point releases usually reuse the previous kernel.
       # Resolve the new version's kernel from its rootfs.mtree manifest (small
       # text fetch, no ISO); if a release for (kernel, current driver) already
-      # exists, no build is needed. A PROMOTED covering release means the
-      # installer serves the version right now and the tracked version may
-      # advance; an unpromoted one only parks the build (covered_pending), so
-      # the tracked version holds until promotion. An unresolvable kernel
-      # falls through to "build", the safe default.
+      # exists, no build is needed; only a PROMOTED one lets the tracked
+      # version advance (see check-kernel-coverage.py). An unresolvable
+      # kernel falls through to "build", the safe default.
       # -----------------------------------------------------------------------
       - name: Resolve kernel and check coverage
         id: kernel
@@ -234,9 +232,6 @@ jobs:
           echo "Kernel for ${NEW_VERSION}: ${NEW_KERNEL}"
           export NEW_KERNEL
 
-          # The coverage decision lives in a tested script: its matching
-          # rules must stay in lockstep with install.sh's release selection
-          # (tests/test_kernel_coverage.py holds both to shared fixtures).
           # A transient API or parse failure must not fail the daily check:
           # the safe default is covered=false (build it).
           COVERAGE=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
@@ -249,12 +244,6 @@ jobs:
               echo "covered=true" >> "$GITHUB_OUTPUT"
               ;;
             pending\ *)
-              # Coverage by an UNPROMOTED build skips the duplicate build but
-              # must not advance the tracked version: that would consume the
-              # one-shot version-changed event, and deleting the build after
-              # a failed hardware test would leave this kernel with no
-              # rebuild path. Holding the version back makes the daily run
-              # re-check until the build is promoted (or rebuilt if deleted).
               COVERING_TAG="${COVERAGE#pending }"
               echo "::notice title=build skipped::${NEW_VERSION} ships kernel ${NEW_KERNEL}; unpromoted build ${COVERING_TAG} is awaiting hardware-test promotion. No duplicate build is dispatched, and the tracked version does not advance until that release is promoted."
               echo "covered=true" >> "$GITHUB_OUTPUT"
@@ -451,10 +440,8 @@ jobs:
       # rewritten in place; build.yml reads it at runtime so no workflow file
       # changes are needed.
       # -----------------------------------------------------------------------
-      # The stable version is held back while its kernel's only coverage is
-      # an unpromoted build (covered_pending): see the coverage step. The
-      # composite TRUENAS_CHANGED below keeps the write, the commit message,
-      # and the step condition in agreement on that.
+      # covered_pending holds the stable version back (see the coverage step);
+      # the composite TRUENAS_CHANGED keeps write, message, and condition agreed.
       - name: Update tracked-versions
         id: write
         if: >-
