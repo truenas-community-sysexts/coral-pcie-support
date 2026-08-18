@@ -585,8 +585,7 @@ if not matches:
 if not matches:
     channel = 'preview (beta)' if is_preview else 'stable'
     print(f'No {channel} release found for kernel {kver} (TrueNAS {version}).', file=sys.stderr)
-    # Preview (BETA/RC) builds are excluded: they are never promoted, so
-    # promising 'installs once promoted' about one would be false.
+    # not preview_tagged: previews never promote, so the hint would be false
     pending = [r for r in data
                if not r.get('draft') and r.get('prerelease')
                and not preview_tagged(r)
@@ -674,9 +673,8 @@ echo "PREINIT script extracted"
 echo ""
 echo "=== Verifying image kernel ==="
 RUNNING_KVER=$(uname -r)
-# unsquashfs exits nonzero when the pattern matches nothing (an image with no
-# modules at all); without || true, pipefail would kill the script here before
-# the no-module-directory diagnostic below ever prints.
+# || true: unsquashfs exits nonzero on an unmatched pattern, and pipefail
+# would kill the script before the no-module-directory diagnostic prints.
 IMAGE_MODULE_DIRS=$(unsquashfs -l "${WORK_DIR}/coral.raw" 'usr/lib/modules/*' 2>/dev/null \
     | sed -n 's|^squashfs-root/usr/lib/modules/\([^/]*\)/.*|\1|p' | sort -u) || true
 if ! printf '%s\n' "$IMAGE_MODULE_DIRS" | grep -qxF "$RUNNING_KVER"; then
