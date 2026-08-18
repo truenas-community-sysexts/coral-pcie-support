@@ -205,9 +205,11 @@ jobs:
       # version string, and point releases usually reuse the previous kernel.
       # Resolve the new version's kernel from its rootfs.mtree manifest (small
       # text fetch, no ISO); if a release for (kernel, current driver) already
-      # exists, the installer already serves this version by kernel match and
-      # no build is needed. An unresolvable kernel falls through to "build",
-      # the safe default.
+      # exists, no build is needed. A PROMOTED covering release means the
+      # installer serves the version right now and the tracked version may
+      # advance; an unpromoted one only parks the build (covered_pending), so
+      # the tracked version holds until promotion. An unresolvable kernel
+      # falls through to "build", the safe default.
       # -----------------------------------------------------------------------
       - name: Resolve kernel and check coverage
         id: kernel
@@ -232,62 +234,37 @@ jobs:
           echo "Kernel for ${NEW_VERSION}: ${NEW_KERNEL}"
           export NEW_KERNEL
 
-          read -r -d '' COVERAGE_PY <<'PY' || true
-          import sys, json, os, re
-          # gh api --paginate emits one JSON array per page, concatenated.
-          decoder = json.JSONDecoder()
-          text = sys.stdin.read()
-          data = []
-          pos = 0
-          while pos < len(text):
-              if text[pos].isspace():
-                  pos += 1
-                  continue
-              doc, pos = decoder.raw_decode(text, pos)
-              if isinstance(doc, list):
-                  data.extend(doc)
-          kver = os.environ['NEW_KERNEL']
-          short = kver.split('-')[0]
-          driver = os.environ['CURRENT_DRIVER']
-          ker_re = re.compile(r'Target kernel\s*\|\s*`([^`]+)`')
-          hdr_re = re.compile(r'for TrueNAS SCALE (\S+)')
-          pre_re = re.compile(r'-(BETA|RC)', re.IGNORECASE)
-          for r in data:
-              if r.get('draft'):
-                  continue
-              tag = r.get('tag_name', '')
-              body = r.get('body') or ''
-              # Preview builds never promote, so install.sh's stable channel
-              # never serves them: they provide no coverage. Counting one here
-              # would suppress the stable build for its kernel forever (e.g. a
-              # GA release reusing the last RC's kernel).
-              hdr = hdr_re.search(body)
-              if pre_re.search(tag) or (hdr and pre_re.search(hdr.group(1))):
-                  continue
-              # Only builds of the current driver count: a driver bump must
-              # rebuild every kernel (the dispatch condition handles that).
-              if f'gasket{driver}-' not in tag:
-                  continue
-              m = ker_re.search(body)
-              tk = m.group(1) if m else ''
-              # The Target kernel row is the primary key; a k-tag whose body
-              # lost the row still encodes its short kernel in the tag.
-              if tk == kver or (not tk and tag.startswith(f'k{short}-gasket')):
-                  print(tag)
-                  break
-          PY
+          # The coverage decision lives in a tested script: its matching
+          # rules must stay in lockstep with install.sh's release selection
+          # (tests/test_kernel_coverage.py holds both to shared fixtures).
           # A transient API or parse failure must not fail the daily check:
           # the safe default is covered=false (build it).
-          COVERING_TAG=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-            | python3 -c "$COVERAGE_PY") || COVERING_TAG=""
+          COVERAGE=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            | python3 .github/scripts/check-kernel-coverage.py) || COVERAGE=""
 
-          if [ -n "$COVERING_TAG" ]; then
-            echo "::notice title=build skipped::${NEW_VERSION} ships kernel ${NEW_KERNEL}, already covered by release ${COVERING_TAG}. Tracked versions still update; the installer serves this version by kernel match."
-            echo "covered=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "No release covers kernel ${NEW_KERNEL} with driver ${CURRENT_DRIVER}; will build."
-            echo "covered=false" >> "$GITHUB_OUTPUT"
-          fi
+          case "$COVERAGE" in
+            promoted\ *)
+              COVERING_TAG="${COVERAGE#promoted }"
+              echo "::notice title=build skipped::${NEW_VERSION} ships kernel ${NEW_KERNEL}, already covered by promoted release ${COVERING_TAG}; the installer serves this version by kernel match. Tracked versions still update."
+              echo "covered=true" >> "$GITHUB_OUTPUT"
+              ;;
+            pending\ *)
+              # Coverage by an UNPROMOTED build skips the duplicate build but
+              # must not advance the tracked version: that would consume the
+              # one-shot version-changed event, and deleting the build after
+              # a failed hardware test would leave this kernel with no
+              # rebuild path. Holding the version back makes the daily run
+              # re-check until the build is promoted (or rebuilt if deleted).
+              COVERING_TAG="${COVERAGE#pending }"
+              echo "::notice title=build skipped::${NEW_VERSION} ships kernel ${NEW_KERNEL}; unpromoted build ${COVERING_TAG} is awaiting hardware-test promotion. No duplicate build is dispatched, and the tracked version does not advance until that release is promoted."
+              echo "covered=true" >> "$GITHUB_OUTPUT"
+              echo "covered_pending=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "No release covers kernel ${NEW_KERNEL} with driver ${CURRENT_DRIVER}; will build."
+              echo "covered=false" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
 
       # -----------------------------------------------------------------------
       # TrueNAS preview (beta) check: TrueNAS 26 betas are not published to
@@ -474,11 +451,18 @@ jobs:
       # rewritten in place; build.yml reads it at runtime so no workflow file
       # changes are needed.
       # -----------------------------------------------------------------------
+      # The stable version is held back while its kernel's only coverage is
+      # an unpromoted build (covered_pending): see the coverage step. The
+      # composite TRUENAS_CHANGED below keeps the write, the commit message,
+      # and the step condition in agreement on that.
       - name: Update tracked-versions
         id: write
-        if: steps.truenas.outputs.changed == 'true' || steps.preview.outputs.changed == 'true' || steps.gasket.outputs.changed == 'true'
+        if: >-
+          (steps.truenas.outputs.changed == 'true' && steps.kernel.outputs.covered_pending != 'true') ||
+          steps.preview.outputs.changed == 'true' ||
+          steps.gasket.outputs.changed == 'true'
         env:
-          TRUENAS_CHANGED: ${{ steps.truenas.outputs.changed }}
+          TRUENAS_CHANGED: ${{ steps.truenas.outputs.changed == 'true' && steps.kernel.outputs.covered_pending != 'true' }}
           NEW_TRUENAS_VERSION: ${{ steps.truenas.outputs.version }}
           NEW_TRAIN: ${{ steps.truenas.outputs.train }}
           CURRENT_TRAIN: ${{ steps.tracked.outputs.train }}

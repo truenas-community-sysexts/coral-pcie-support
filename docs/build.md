@@ -35,9 +35,14 @@ equal `uname -r`), and TrueNAS point releases usually reuse the previous
 release's kernel. The pipeline is keyed accordingly:
 
 - check-releases.yml resolves a new stable version's kernel from its
-  rootfs.mtree manifest. If a release for that kernel (with the current
-  driver) already exists, no build is dispatched; tracked-versions.json
-  still updates and the installer serves the new version by kernel match.
+  rootfs.mtree manifest. If a promoted release for that kernel (with the
+  current driver) already exists, no build is dispatched;
+  tracked-versions.json still updates and the installer serves the new
+  version by kernel match. If the only coverage is an unpromoted build
+  awaiting hardware test, no duplicate build is dispatched either, but the
+  tracked version holds until that build is promoted (so the kernel keeps a
+  rebuild path if the build is deleted). Preview (BETA/RC) builds never
+  count as coverage.
 - A new kernel, a driver bump, or an unresolvable kernel always builds.
 - install.sh selects releases by matching `uname -r` against the release's
   `Target kernel` row, falling back to the short kernel encoded in a k-tag
