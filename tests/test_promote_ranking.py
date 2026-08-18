@@ -108,6 +108,24 @@ class SameKernelTiebreak(unittest.TestCase):
 
 
 class LegacyRanking(unittest.TestCase):
+    def test_old_ktag_does_not_displace_newer_kernel_unknown_latest(self):
+        # A k-tag carries no TrueNAS version and a release whose body lost
+        # its Target kernel row ranks by version only: no shared dimension.
+        # Publication date decides, so promoting an OLD k-tag build cannot
+        # steal Latest from a newer release with a damaged body.
+        res = decide(release("k6.12.33-gasket1.0-18.4-r12", "25.10.3",
+                             kver=K33, published="2026-01-10T00:00:00Z"),
+                     [release("v25.10.4-gasket1.0-18.4-r3", "25.10.4",
+                              published="2026-02-01T00:00:00Z")])
+        self.assertEqual(res["makeLatest"], "false")
+
+    def test_new_ktag_still_displaces_older_kernel_unknown_release(self):
+        res = decide(release("k6.12.91-gasket1.0-18.4-r9", "25.10.4",
+                             kver=K91, published="2026-02-01T00:00:00Z"),
+                     [release("v25.04.1-gasket1.0-18.2-r5", "25.04.1",
+                              published="2025-05-01T00:00:00Z")])
+        self.assertEqual(res["makeLatest"], "true")
+
     def test_known_kernel_outranks_legacy_body(self):
         res = decide(release("v25.10.3-gasket1.0-18.4-r7", "25.10.3", kver=K33),
                      [release("v25.10.4-gasket1.0-18.4-r3", "25.10.4")])
