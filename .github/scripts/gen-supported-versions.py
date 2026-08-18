@@ -128,11 +128,14 @@ def kernel_winners(releases_by_version):
     promoted (non-prerelease) release whose body records that kernel,
     whichever TrueNAS version produced it. The table must name this release
     on a kernel row, not the row versions' own newest build, or the table
-    and the installer disagree the moment a sibling rebuild lands."""
+    and the installer disagree the moment a sibling rebuild lands.
+    Preview (BETA/RC) builds never win: install.sh's stable channel refuses
+    them even if one is mispublished with prerelease=false."""
     winners = {}
     for rels in releases_by_version.values():
         for r in rels:
-            if r["prerelease"] or not r["kver"]:
+            if (r["prerelease"] or not r["kver"]
+                    or is_preview_version(r["version"])):
                 continue
             cur = winners.get(r["kver"])
             if cur is None or r["published"] > cur["published"]:
