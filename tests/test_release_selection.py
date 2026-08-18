@@ -99,6 +99,17 @@ class KernelMatch(unittest.TestCase):
         self.assertIn("awaiting hardware-test", p.stderr)
         self.assertIn("(prerelease)", p.stderr)
 
+    def test_no_match_pending_hint_excludes_preview_builds(self):
+        # A preview (BETA/RC) build is never promoted, so a stable box whose
+        # kernel matches only a preview prerelease must not be promised an
+        # install "once promoted". pending_builds() in
+        # gen-supported-versions.py applies the same exclusion.
+        rels = [release("v26.0.0-BETA.2-gasket1.0-18.4-r38", "26.0.0-BETA.2",
+                        kver="6.12.93-production+truenas", prerelease=True)]
+        p = run_selection(rels, "25.10.5", "6.12.93-production+truenas")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertNotIn("awaiting hardware-test", p.stderr)
+
     def test_draft_ignored(self):
         rels = RELEASES + [release("v25.10.9-gasket1.0-18.4-r99", "25.10.9",
                                    kver="6.12.99-production+truenas",
