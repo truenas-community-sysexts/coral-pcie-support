@@ -137,5 +137,34 @@ class LegacyRanking(unittest.TestCase):
         self.assertEqual(res["makeLatest"], "false")
 
 
+K18 = "6.18.23-production+truenas"
+
+
+class PreviewExclusion(unittest.TestCase):
+    # Preview (BETA/RC) builds can never hold Latest, even when mispublished
+    # without the prerelease flag. The promoted tag itself is guarded before
+    # decideMakeLatest runs; these cover the comparison set.
+
+    def test_mispublished_beta_body_cannot_hold_latest(self):
+        # A k-tag carries no BETA marker; only the notes header names the
+        # preview target.
+        res = decide(release("v25.10.3-gasket1.0-18.4-r7", "25.10.3", kver=K33),
+                     [release("k6.18.23-gasket1.0-18.4-r9", "26.0.0-BETA.1",
+                              kver=K18, prerelease=False)])
+        self.assertEqual(res["makeLatest"], "true")
+
+    def test_mispublished_beta_tag_cannot_hold_latest(self):
+        res = decide(release("v25.10.3-gasket1.0-18.4-r7", "25.10.3", kver=K33),
+                     [release("v26.0.0-BETA.1-gasket1.0-18.4-r2", "26.0.0-BETA.1",
+                              kver=K18, prerelease=False)])
+        self.assertEqual(res["makeLatest"], "true")
+
+    def test_dotless_rc_still_classifies_as_preview(self):
+        res = decide(release("v25.10.3-gasket1.0-18.4-r7", "25.10.3", kver=K33),
+                     [release("k6.18.23-gasket1.0-18.4-r9", "26.0.0-RC1",
+                              kver=K18, prerelease=False)])
+        self.assertEqual(res["makeLatest"], "true")
+
+
 if __name__ == "__main__":
     unittest.main()
