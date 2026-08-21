@@ -47,6 +47,20 @@ jobs:
             // renders ("for TrueNAS SCALE <version>") names the target.
             const bodyVerOf = (r) => (((r.body || '').match(/for TrueNAS SCALE (\S+)/) || [])[1] || '');
             const previewRelease = (r) => previewVer(r.tag_name) || previewVer(bodyVerOf(r));
+
+            // Releases rank by the kernel they target: k-tags encode it
+            // directly, v-tag releases record it in their Target kernel body
+            // row. A release with an unknown kernel (legacy body) ranks below
+            // any known kernel. Two releases on the SAME kernel (a driver
+            // bump rebuilds every kernel, leaving two per kernel) rank by
+            // TrueNAS version when both tags carry one, then by run number
+            // (which also orders k-tags, which carry no version). The run
+            // number alone cannot come first: an older version rebuilt later
+            // has a HIGHER run than the Latest it must not displace. This
+            // keeps the invariant across the tag-scheme migration: promoting
+            // an older build never regresses Latest, whatever scheme the
+            // newer build uses. A k-tag measured against a version-only rank
+            // shares no dimension at all; publication date decides there.
             const numOf = (s) => {
               const m = (s || '').match(/^(\d+(?:\.\d+)*)/);
               return m ? m[1].split('.').map(Number) : null;
@@ -203,23 +217,10 @@ jobs:
             if (commits) changelog += `\n### Commits\n${commits}\n`;
             if (!prNotes && !commits) changelog += '\n_Initial release._\n';
 
-            // Only become "Latest" if this is the newest STABLE (non-prerelease)
-            // release. Releases rank by the kernel they target: k-tags encode
-            // it directly, v-tag releases record it in their Target kernel
-            // body row. A release with an unknown kernel (legacy body) ranks
-            // below any known kernel. Two releases on the SAME kernel (a
-            // driver bump rebuilds every kernel, leaving two per kernel) rank
-            // by TrueNAS version when both tags carry one, then by run number
-            // (which also orders k-tags, which carry no version). The run
-            // number alone cannot come first: an older version rebuilt later
-            // has a HIGHER run than the Latest it must not displace. This
-            // keeps the invariant across the tag-scheme migration: promoting
-            // an older build never regresses Latest, whatever scheme the
-            // newer build uses. A k-tag measured against a version-only rank
-            // shares no dimension at all; publication date decides there. (GitHub's make_latest:'legacy' picks by date,
-            // which would wrongly favour the just-promoted older build, so
-            // compare explicitly.)
-            // rels = all other non-draft releases
+            // Newest-stable decision: rationale sits with decideMakeLatest
+            // above. rels = all other non-draft releases. (GitHub's
+            // make_latest:'legacy' picks by date, which would wrongly favour
+            // the just-promoted older build, so compare explicitly.)
             const { makeLatest, newest } = decideMakeLatest(release, rels);
 
             await github.rest.repos.updateRelease({ owner, repo, release_id: release.id,
