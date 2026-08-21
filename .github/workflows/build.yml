@@ -181,6 +181,7 @@ jobs:
     timeout-minutes: 90
     outputs:
       run_number: ${{ steps.build_id.outputs.run_number }}
+      short_kver: ${{ steps.kver.outputs.short_kver }}
 
     steps:
       - name: Checkout repository
@@ -437,6 +438,7 @@ jobs:
           key: kernel-headers-v3-${{ needs.resolve.outputs.truenas_version }}
 
       - name: Detect kernel version from cached headers
+        id: kver
         run: |
           # Same selector pattern as the extract step: prefer production,
           # fall back to non-debug, then fail loud rather than picking up
@@ -472,6 +474,10 @@ jobs:
           fi
           echo "Real kernel version: ${REAL_KVER}"
           echo "REAL_KVER=${REAL_KVER}" >> "$GITHUB_ENV"
+          # Short form (6.12.91 from 6.12.91-production+truenas) keys the
+          # release tag; exposed as a step output so workflow expressions can
+          # reference it, mirroring the build_id pattern.
+          echo "short_kver=${REAL_KVER%%-*}" >> "$GITHUB_OUTPUT"
 
           # Detect the GCC major version the kernel was compiled with.
           # Prefer include/config/cc-version-text (plain-text, one line);
@@ -668,8 +674,9 @@ jobs:
           BUILD_SHA: ${{ github.sha }}
           RUN_NUMBER: ${{ steps.build_id.outputs.run_number }}
           REPO: ${{ github.repository }}
+          SHORT_KVER: ${{ steps.kver.outputs.short_kver }}
         run: |
-          envsubst '${TRUENAS_VERSION} ${TRAIN_NAME} ${GASKET_DRIVER} ${GASKET_REF} ${GASKET_REPO} ${REAL_KVER} ${RUNNER_IMAGE} ${BUILD_SHA} ${REPO} ${RUN_NUMBER}' > release-notes.md <<'RELEASE_NOTES'
+          envsubst '${TRUENAS_VERSION} ${TRAIN_NAME} ${GASKET_DRIVER} ${GASKET_REF} ${GASKET_REPO} ${REAL_KVER} ${RUNNER_IMAGE} ${BUILD_SHA} ${REPO} ${RUN_NUMBER} ${SHORT_KVER}' > release-notes.md <<'RELEASE_NOTES'
           ## Coral PCIe TPU Sysext for TrueNAS SCALE ${TRUENAS_VERSION} (${TRAIN_NAME})
 
           | Field | Value |
@@ -679,6 +686,8 @@ jobs:
           | Target kernel | `${REAL_KVER}` |
           | Built on | `${RUNNER_IMAGE}` |
           | Source commit | [`${BUILD_SHA}`](https://github.com/${REPO}/commit/${BUILD_SHA}) |
+
+          This build targets kernel `${REAL_KVER}` and loads on any TrueNAS release shipping that exact kernel, not only ${TRUENAS_VERSION}. The README supported versions table lists the covered versions.
 
           **Target Device:** Google Coral PCIe TPU (M.2 / mini-PCIe). For USB Coral accelerators, no kernel module is needed.
 
@@ -691,7 +700,7 @@ jobs:
 
           ### Install
           ```bash
-          curl -fsSL https://github.com/${REPO}/releases/download/v${TRUENAS_VERSION}-gasket${GASKET_DRIVER}-r${RUN_NUMBER}/install.sh | sudo bash
+          curl -fsSL https://github.com/${REPO}/releases/download/k${SHORT_KVER}-gasket${GASKET_DRIVER}-r${RUN_NUMBER}/install.sh | sudo bash
           ```
 
           ### Verify
@@ -702,7 +711,7 @@ jobs:
 
           ### Uninstall
           ```bash
-          curl -fsSL https://github.com/${REPO}/releases/download/v${TRUENAS_VERSION}-gasket${GASKET_DRIVER}-r${RUN_NUMBER}/uninstall.sh | sudo bash
+          curl -fsSL https://github.com/${REPO}/releases/download/k${SHORT_KVER}-gasket${GASKET_DRIVER}-r${RUN_NUMBER}/uninstall.sh | sudo bash
           ```
 
           ### Checksums
@@ -744,8 +753,8 @@ jobs:
         id: release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: v${{ needs.resolve.outputs.truenas_version }}-gasket${{ needs.resolve.outputs.gasket_driver_version }}-r${{ needs.build.outputs.run_number }}
-          name: "TrueNAS ${{ needs.resolve.outputs.truenas_version }} - Gasket ${{ needs.resolve.outputs.gasket_driver_version }} (r${{ needs.build.outputs.run_number }})"
+          tag_name: k${{ needs.build.outputs.short_kver }}-gasket${{ needs.resolve.outputs.gasket_driver_version }}-r${{ needs.build.outputs.run_number }}
+          name: "Kernel ${{ needs.build.outputs.short_kver }} (TrueNAS ${{ needs.resolve.outputs.truenas_version }}) - Gasket ${{ needs.resolve.outputs.gasket_driver_version }} (r${{ needs.build.outputs.run_number }})"
           body_path: release-notes.md
           files: |
             coral.raw
@@ -766,10 +775,22 @@ jobs:
           REPO: ${{ github.repository }}
           REL_ID: ${{ steps.release.outputs.id }}
           MARK_LATEST: ${{ needs.resolve.outputs.mark_latest }}
+          TRUENAS_VERSION: ${{ needs.resolve.outputs.truenas_version }}
         run: |
-          if [ "$MARK_LATEST" = "true" ]; then
+          # A preview (BETA/RC) target always publishes as a prerelease, no
+          # matter what the dispatch says: k-tags carry no BETA marker, so the
+          # prerelease flag is the stable channel's primary lock against
+          # serving a beta build, and mark_latest must not be able to clear it.
+          IS_PREVIEW=false
+          case "$TRUENAS_VERSION" in
+            *-[Bb][Ee][Tt][Aa]*|*-[Rr][Cc]*) IS_PREVIEW=true ;;
+          esac
+          if [ "$MARK_LATEST" = "true" ] && [ "$IS_PREVIEW" != "true" ]; then
             gh api --method PATCH "repos/${REPO}/releases/${REL_ID}" -F draft=false -f make_latest=true
           else
+            if [ "$MARK_LATEST" = "true" ]; then
+              echo "::warning title=preview build::mark_latest ignored for preview target ${TRUENAS_VERSION}; published as prerelease"
+            fi
             gh api --method PATCH "repos/${REPO}/releases/${REL_ID}" -F draft=false -F prerelease=true
           fi
 
@@ -780,9 +801,10 @@ jobs:
           TRUENAS_VERSION: ${{ needs.resolve.outputs.truenas_version }}
           GASKET_DRIVER: ${{ needs.resolve.outputs.gasket_driver_version }}
           RUN_NUMBER: ${{ needs.build.outputs.run_number }}
+          SHORT_KVER: ${{ needs.build.outputs.short_kver }}
         with:
           script: |
-            const tag = `v${process.env.TRUENAS_VERSION}-gasket${process.env.GASKET_DRIVER}-r${process.env.RUN_NUMBER}`;
+            const tag = `k${process.env.SHORT_KVER}-gasket${process.env.GASKET_DRIVER}-r${process.env.RUN_NUMBER}`;
             const releaseUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/releases/tag/${tag}`;
 
             // A pre-release TrueNAS target (BETA/RC) is the 26-beta preview
@@ -854,6 +876,7 @@ jobs:
                 ``,
                 `**Release:** [${tag}](${releaseUrl})`,
                 `<!-- release-tag: ${tag} -->`,
+                `<!-- preview-build: ${isPreview} -->`,
                 `**TrueNAS:** ${process.env.TRUENAS_VERSION}`,
                 `**Gasket:** ${process.env.GASKET_DRIVER}`,
                 ``,

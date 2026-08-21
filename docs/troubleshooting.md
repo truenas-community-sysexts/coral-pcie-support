@@ -56,9 +56,10 @@ previous sysext is no longer compatible.
 
 2. Visit the releases page printed in the error message.
 
-3. Find the release whose tag matches your TrueNAS version
-   (`v<truenas>-gasket<driver>-r<run>`). The release notes record the kernel
-   version it was built against.
+3. Find the release whose tag matches your running kernel
+   (`k<kernel>-gasket<driver>-r<run>`, e.g. `k6.12.91-...` for kernel
+   `6.12.91-production+truenas`). Older releases use `v<truenas>-...` tags;
+   either way the release notes record the exact kernel the build targets.
 
 4. If a matching release exists, re-run the installer:
 
