@@ -176,6 +176,7 @@ jobs:
     outputs:
       run_number: ${{ steps.build_id.outputs.run_number }}
       short_kver: ${{ steps.kver.outputs.short_kver }}
+      real_kver: ${{ steps.kver.outputs.real_kver }}
 
     steps:
       - name: Checkout repository
@@ -470,8 +471,10 @@ jobs:
           echo "REAL_KVER=${REAL_KVER}" >> "$GITHUB_ENV"
           # Short form (6.12.91 from 6.12.91-production+truenas) keys the
           # release tag; exposed as a step output so workflow expressions can
-          # reference it, mirroring the build_id pattern.
+          # reference it, mirroring the build_id pattern. The full form feeds
+          # the hardware-test issue's kernel requirement.
           echo "short_kver=${REAL_KVER%%-*}" >> "$GITHUB_OUTPUT"
+          echo "real_kver=${REAL_KVER}" >> "$GITHUB_OUTPUT"
 
           # Detect the GCC major version the kernel was compiled with.
           # Prefer include/config/cc-version-text (plain-text, one line);
@@ -825,6 +828,7 @@ jobs:
           GASKET_DRIVER: ${{ needs.resolve.outputs.gasket_driver_version }}
           RUN_NUMBER: ${{ needs.build.outputs.run_number }}
           SHORT_KVER: ${{ needs.build.outputs.short_kver }}
+          REAL_KVER: ${{ needs.build.outputs.real_kver }}
           IS_PREVIEW: ${{ steps.publish.outputs.is_preview }}
         with:
           script: |
@@ -878,16 +882,25 @@ jobs:
               return;
             }
 
-            const promoteSection = isPreview
+            // Test procedure for a human tester, followed by hand, so every
+            // command must work exactly as written. install.sh loads
+            // coral-lib.sh from its own directory, so both are downloaded
+            // side by side; a local-raw install skips the checksum, so the
+            // steps verify it first. The two marker comments are parsed by
+            // promote.yml: keep them byte for byte.
+            const truenasVersion = process.env.TRUENAS_VERSION;
+            const kver = process.env.REAL_KVER;
+            const dl = `https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${tag}`;
+            const dir = `/tmp/coral-${tag}`;
+
+            const signOff = isPreview
               ? [
-                  `### Promote`,
-                  `This is a **TrueNAS ${process.env.TRUENAS_VERSION} preview build**. It is intentionally kept as a permanent **pre-release** and is **never** promoted to Latest, so stable installs are unaffected.`,
-                  `Once you've verified it on hardware, **close this issue as completed** to record the sign-off. The release stays a pre-release; install it explicitly via its tag.`,
+                  `3. **Close as completed** to record the sign-off. That is all it does: preview builds stay pre-releases and are never promoted to Latest, however this issue is closed.`,
                 ]
               : [
-                  `### Promote`,
-                  `This build is published as a **pre-release**, so it is not served by \`releases/latest\` (or install.sh) yet.`,
-                  `Once you've verified it on hardware, **close this issue as completed**: that automatically promotes [\`${tag}\`](${releaseUrl}) to the latest release and appends the changelog.`,
+                  `3. Close this issue:`,
+                  `   - **Close as completed** promotes [\`${tag}\`](${releaseUrl}): promote.yml turns the pre-release into a full release and appends the changelog. It becomes **Latest** only if it ranks highest among the stable releases (newest target kernel first); otherwise it is promoted without taking Latest.`,
+                  `   - **Close as not planned** rejects it: nothing is promoted, and the build stays a pre-release that stable installs never receive.`,
                 ];
 
             await github.rest.issues.create({
@@ -897,29 +910,75 @@ jobs:
               labels: [label],
               body: [
                 isPreview
-                  ? `An auto-build published a new **TrueNAS preview (beta)** release that needs hardware verification. It stays a pre-release permanently.`
-                  : `An auto-build published a new release that needs hardware verification before being promoted to **Latest**.`,
+                  ? `An auto-build published a new **TrueNAS preview (beta)** Coral PCIe TPU sysext release that needs hardware verification. It stays a pre-release permanently and is never promoted to Latest.`
+                  : `An auto-build published a new Coral PCIe TPU sysext release that needs hardware verification before it can be promoted. Until then it is a pre-release, which stable installs never receive.`,
                 ``,
                 `**Release:** [${tag}](${releaseUrl})`,
                 `<!-- release-tag: ${tag} -->`,
                 `<!-- preview-build: ${isPreview} -->`,
-                `**TrueNAS:** ${process.env.TRUENAS_VERSION}`,
+                `**TrueNAS:** ${truenasVersion}`,
+                `**Kernel:** \`${kver}\``,
                 `**Gasket:** ${process.env.GASKET_DRIVER}`,
                 ``,
-                `### Install THIS build to test it`,
-                `It is a **pre-release**, so the default \`latest\` install (and version auto-resolve) skip it. Install this exact build:`,
+                `The steps below install this exact build from its own release assets, whatever the one line installer would pick.`,
+                ``,
+                `### Requirements`,
+                `- TrueNAS ${truenasVersion}, or any TrueNAS version whose \`uname -r\` prints exactly \`${kver}\`. The modules only load on that kernel, and the installer refuses an image built for a different one.`,
+                `- A Coral PCIe TPU (M.2, Dual Edge M.2, or Mini PCIe) installed in this system.`,
+                `- A shell on the TrueNAS host (SSH or the web UI shell) with sudo.`,
+                ``,
+                `### 1. Pre-checks`,
                 "```bash",
-                `curl -fsSL https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${tag}/coral.raw -o /tmp/coral.raw`,
-                `curl -fsSL https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${tag}/install.sh | sudo bash -s -- /tmp/coral.raw`,
+                `uname -r                  # must print exactly: ${kver}`,
+                `lspci -nn | grep -i 1ac1  # Coral present: one line per TPU, containing [1ac1:089a]`,
+                "```",
+                `If \`uname -r\` prints anything else, stop: this build cannot load on this system.`,
+                ``,
+                `If Frigate (or another app) uses the TPU, stop it first, under Apps in the web UI or with (use your app's name if it is not \`frigate\`):`,
+                "```bash",
+                `sudo midclt call -j app.stop frigate`,
                 "```",
                 ``,
-                `### Test checklist`,
-                `- [ ] Download and install on a TrueNAS system with a Coral PCIe TPU`,
-                `- [ ] Confirm \`/dev/apex_0\` exists after module load`,
-                `- [ ] Confirm Frigate detects the Coral TPU`,
-                `- [ ] Reboot and confirm the PREINIT script restores the sysext`,
+                `### 2. Install this build`,
+                `Download this release's files into one directory, verify the image, then install from the local file:`,
+                "```bash",
+                `mkdir -p ${dir} && cd ${dir}`,
+                `curl -fsSL -o coral.raw ${dl}/coral.raw`,
+                `curl -fsSL -o coral.raw.sha256 ${dl}/coral.raw.sha256`,
+                `curl -fsSL -o install.sh ${dl}/install.sh`,
+                `curl -fsSL -o coral-lib.sh ${dl}/coral-lib.sh`,
+                `sha256sum -c coral.raw.sha256   # must print: coral.raw: OK`,
+                `sudo bash install.sh coral.raw  # prints "Device /dev/apex_0 detected!" and "=== Persistence setup complete ==="`,
+                "```",
+                `With several data pools and no existing Coral config, the installer asks which pool keeps its files; add \`--pool=NAME\` to choose up front.`,
                 ``,
-                ...promoteSection,
+                `### 3. Verify`,
+                `From the same directory:`,
+                "```bash",
+                `sudo bash install.sh --check   # Summary must show 0 fail; before the reboot, a "No coral-preinit entries this boot" warning is fine`,
+                `ls -l /dev/apex_*              # crw-rw-rw- ... /dev/apex_0 (plus /dev/apex_1 on a Dual Edge TPU)`,
+                `lsmod | grep -E 'gasket|apex'  # two lines: apex, and gasket (listing apex as its user)`,
+                "```",
+                ``,
+                `### 4. Reboot and re-verify`,
+                "```bash",
+                `sudo reboot`,
+                "```",
+                `The reboot may clear /tmp, so fetch the two scripts again (safe to repeat; the installed image lives on your pool), then re-run the checks:`,
+                "```bash",
+                `mkdir -p ${dir} && cd ${dir}`,
+                `curl -fsSL -o install.sh ${dl}/install.sh`,
+                `curl -fsSL -o coral-lib.sh ${dl}/coral-lib.sh`,
+                `sudo bash install.sh --check                    # Summary must show 0 warn, 0 fail, including "PREINIT completed successfully this boot"`,
+                `ls -l /dev/apex_*                               # same as step 3`,
+                `lsmod | grep -E 'gasket|apex'                   # same as step 3`,
+                `sudo journalctl -b -t coral-preinit --no-pager  # PREINIT log for this boot: last line ends with "Done", no ERROR lines`,
+                "```",
+                ``,
+                `### 5. Report and sign off`,
+                `1. Start Frigate again (under Apps in the web UI, or \`sudo midclt call -j app.start frigate\`) and check its log shows \`TPU found\`.`,
+                `2. Comment on this issue with the \`uname -r\` output, your hardware (Coral model and host system), and the output of the step 3 and step 4 commands.`,
+                ...signOff,
               ].join('\n'),
             });
             console.log(`Created ${label} issue for ${tag}`);
