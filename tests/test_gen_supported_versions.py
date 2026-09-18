@@ -191,6 +191,18 @@ class RenderTable(unittest.TestCase):
         self.assertIn("awaiting hardware-test promotion", line)
         self.assertNotIn("not built yet", line)
 
+    def test_empty_cells_use_plain_dash(self):
+        # House style: no em dashes in generated README text.
+        rows = rows_for([release("v25.10.3-gasket1.0-18.4-r2", "25.10.3",
+                                 "Goldeye", None)])
+        lines = gsv.render_table(rows) + gsv.render_table([])
+        self.assertFalse([ln for ln in lines if "\u2014" in ln])
+        unbuilt = [ln for ln in lines if "6.12.91" in ln][0]
+        self.assertIn("| 25.10.4 | - | _not built yet_ |", unbuilt)
+        legacy = [ln for ln in lines if "v25.10.3-gasket1.0-18.4-r2" in ln][0]
+        self.assertTrue(legacy.startswith("| Stable | - | 25.10.3 |"), legacy)
+        self.assertIn("| _none_ | - | _no data yet_ | - | - |", lines)
+
     def test_version_range_helper(self):
         self.assertEqual(gsv.version_range(["25.10.0"]), "25.10.0")
         self.assertEqual(gsv.version_range(["25.10.3.1", "25.10.0", "25.10.2"]),
