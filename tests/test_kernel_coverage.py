@@ -16,17 +16,27 @@ SCRIPT = (Path(__file__).resolve().parents[1]
           / ".github" / "scripts" / "check-kernel-coverage.py")
 
 K93 = "6.12.93-production+truenas"
+# A kernel-tagged Latest ships the kernel-aware installer, so coverage
+# counts; the transition-guard tests below override it.
+KTAG_LATEST = "k6.12.91-gasket1.0-18.4-r41"
 
 
-def run_coverage(releases, kver=K93, driver="1.0-18.4", raw=None):
+def run_coverage_full(releases, kver=K93, driver="1.0-18.4", raw=None,
+                      latest=KTAG_LATEST):
     text = raw if raw is not None else json.dumps(releases)
+    env = {"NEW_KERNEL": kver, "CURRENT_DRIVER": driver,
+           "PATH": "/usr/bin:/bin"}
+    if latest is not None:
+        env["LATEST_TAG"] = latest
     p = subprocess.run(["python3", str(SCRIPT)], input=text,
-                       capture_output=True, text=True,
-                       env={"NEW_KERNEL": kver, "CURRENT_DRIVER": driver,
-                            "PATH": "/usr/bin:/bin"})
+                       capture_output=True, text=True, env=env)
     if p.returncode != 0:
         raise AssertionError(f"script failed: {p.stderr}")
-    return p.stdout.strip()
+    return p
+
+
+def run_coverage(releases, **kwargs):
+    return run_coverage_full(releases, **kwargs).stdout.strip()
 
 
 class Coverage(unittest.TestCase):
@@ -118,6 +128,57 @@ class KtagFallback(unittest.TestCase):
         rel = release("k6.12.93-gasket1.0-18.4-r50", "25.10.3",
                       kver="6.12.33-production+truenas")
         self.assertEqual(run_coverage([rel]), "")
+
+
+class LatestInstallerGuard(unittest.TestCase):
+    # The README one-liner runs the install.sh attached to Latest. Only
+    # k-tag builds ship the kernel-aware installer; a v-tag Latest matches
+    # exact TrueNAS versions, so a skipped build would leave the new version
+    # with "No stable release found". Coverage only counts under a k-tag
+    # Latest, and every doubt resolves to "build".
+    PROMOTED = [release("v25.10.5-gasket1.0-18.4-r40", "25.10.5", kver=K93)]
+    PENDING = [release("v25.10.5-gasket1.0-18.4-r40", "25.10.5", kver=K93,
+                       prerelease=True)]
+    VTAG_LATEST = "v25.10.4-gasket1.0-18.4-r3"
+
+    def test_ktag_latest_promoted_coverage_skips(self):
+        self.assertEqual(run_coverage(self.PROMOTED, latest=KTAG_LATEST),
+                         "promoted v25.10.5-gasket1.0-18.4-r40")
+
+    def test_vtag_latest_promoted_coverage_builds(self):
+        p = run_coverage_full(self.PROMOTED, latest=self.VTAG_LATEST)
+        self.assertEqual(p.stdout.strip(), "")
+        self.assertIn("predates the kernel-aware installer", p.stderr)
+
+    def test_failed_latest_lookup_promoted_coverage_builds(self):
+        p = run_coverage_full(self.PROMOTED, latest="")
+        self.assertEqual(p.stdout.strip(), "")
+        self.assertIn("lookup failed", p.stderr)
+
+    def test_unset_latest_promoted_coverage_builds(self):
+        self.assertEqual(run_coverage(self.PROMOTED, latest=None), "")
+
+    def test_ktag_latest_pending_coverage_skips(self):
+        self.assertEqual(run_coverage(self.PENDING, latest=KTAG_LATEST),
+                         "pending v25.10.5-gasket1.0-18.4-r40")
+
+    def test_vtag_latest_pending_coverage_builds(self):
+        self.assertEqual(run_coverage(self.PENDING, latest=self.VTAG_LATEST),
+                         "")
+
+    def test_failed_latest_lookup_pending_coverage_builds(self):
+        self.assertEqual(run_coverage(self.PENDING, latest=""), "")
+
+    def test_ktag_covering_release_still_needs_ktag_latest(self):
+        # The covering release's own tag scheme is irrelevant: what matters
+        # is the installer the one-liner downloads, which comes from Latest.
+        rel = [release("k6.12.93-gasket1.0-18.4-r50", "25.10.5", kver=K93)]
+        self.assertEqual(run_coverage(rel, latest=self.VTAG_LATEST), "")
+
+    def test_uncovered_kernel_prints_no_guard_note(self):
+        p = run_coverage_full([], latest=self.VTAG_LATEST)
+        self.assertEqual(p.stdout.strip(), "")
+        self.assertEqual(p.stderr, "")
 
 
 class Pagination(unittest.TestCase):
