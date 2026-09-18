@@ -612,7 +612,7 @@ if not matches:
                and target_kernel(r) == kver]
     if pending and not is_preview:
         print('A build for this kernel exists but is a prerelease awaiting hardware-test', file=sys.stderr)
-        print('promotion; it installs automatically once promoted.', file=sys.stderr)
+        print('promotion; re-run this installer once it is promoted.', file=sys.stderr)
     print('Otherwise a build may not exist yet (the daily check builds within ~24h of an', file=sys.stderr)
     print('ISO going live), or you can build one yourself from the repo. Available releases:', file=sys.stderr)
     for r in [x for x in data if not x.get('draft')]:

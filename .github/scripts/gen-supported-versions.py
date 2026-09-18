@@ -187,8 +187,9 @@ def kernel_winners(releases_by_version):
 def pending_builds(releases_by_version):
     """The newest unpromoted stable build per kernel: a prerelease from a
     non-BETA/RC version, still gated behind hardware-test promotion. The
-    installer's error message tells the user such a build exists and installs
-    once promoted; the table must say the same instead of "not built yet"."""
+    installer's error message tells the user such a build exists and can be
+    installed once promoted; the table must say the same instead of "not
+    built yet"."""
     return newest_per_kernel(releases_by_version, want_prerelease=True)
 
 
