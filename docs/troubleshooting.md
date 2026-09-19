@@ -71,6 +71,14 @@ previous sysext is no longer compatible.
    The installer downloads the matching `coral.raw` and replaces the
    stale sysext on the persistent pool. The next boot succeeds.
 
+   > **During the kernel-keyed migration:** this one liner runs the
+   > `install.sh` attached to the current Latest release. Until a
+   > kernel-tagged (`k...`) release is Latest, that installer still matches
+   > your exact TrueNAS version, so it can report no release even though
+   > step 3 found one built for your kernel. In that case install that
+   > release's image directly, as in
+   > [Installing a Specific Version](install.md#installing-a-specific-version).
+
 5. If no matching release exists yet, the daily auto-build workflow
    picks up new TrueNAS versions within ~24 hours of the ISO being
    published at `download.truenas.com`. Wait for the build to land,

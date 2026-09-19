@@ -187,8 +187,9 @@ def kernel_winners(releases_by_version):
 def pending_builds(releases_by_version):
     """The newest unpromoted stable build per kernel: a prerelease from a
     non-BETA/RC version, still gated behind hardware-test promotion. The
-    installer's error message tells the user such a build exists and installs
-    once promoted; the table must say the same instead of "not built yet"."""
+    installer's error message tells the user such a build exists and can be
+    installed once promoted; the table must say the same instead of "not
+    built yet"."""
     return newest_per_kernel(releases_by_version, want_prerelease=True)
 
 
@@ -254,9 +255,9 @@ def render_table(rows):
     lines = ["| Channel | Kernel | TrueNAS versions | Driver | Release |",
              "| --- | --- | --- | --- | --- |"]
     if not rows:
-        lines.append("| _none_ | — | _no data yet_ | — | — |")
+        lines.append("| _none_ | - | _no data yet_ | - | - |")
     for row in rows:
-        ker = f"`{row['kver']}`" if row["kver"] else "—"
+        ker = f"`{row['kver']}`" if row["kver"] else "-"
         if row["url"]:
             rel = f"[`{row['tag']}`]({row['url']})"
         elif row["tag"]:
@@ -267,9 +268,28 @@ def render_table(rows):
             rel = f"{pt} _(awaiting hardware-test promotion)_"
         else:
             rel = "_not built yet_"
-        drv = row["driver"] or "—"
+        drv = row["driver"] or "-"
         lines.append(f"| {row['channel']} | {ker} | {row['versions']} | {drv} | {rel} |")
     return lines
+
+
+def read_releases(text):
+    """Parse `gh api --paginate` output: one JSON array per page,
+    concatenated. An API error object aborts."""
+    decoder = json.JSONDecoder()
+    data = []
+    pos = 0
+    while pos < len(text):
+        if text[pos].isspace():
+            pos += 1
+            continue
+        doc, pos = decoder.raw_decode(text, pos)
+        if isinstance(doc, dict):
+            print(f"ERROR: GitHub API returned: {doc.get('message', doc)!r}",
+                  file=sys.stderr)
+            sys.exit(1)
+        data.extend(doc)
+    return data
 
 
 def main():
@@ -288,16 +308,7 @@ def main():
             print(f"WARNING: {sys.argv[2]} not found; table lists released "
                   "versions only", file=sys.stderr)
 
-    data = json.load(sys.stdin)
-    if isinstance(data, dict):  # an API error object, not a list
-        print(f"ERROR: GitHub API returned: {data.get('message', data)!r}",
-              file=sys.stderr)
-        sys.exit(1)
-    if len(data) >= 100:
-        # per_page=100 without pagination; surface possible truncation loudly
-        # rather than silently dropping older releases from the table.
-        print("WARNING: 100 releases returned; table may be truncated. Add pagination.",
-              file=sys.stderr)
+    data = read_releases(sys.stdin.read())
 
     parsed = parse_releases(data)
     resolve_ktag_kernels(parsed, kernel_map)

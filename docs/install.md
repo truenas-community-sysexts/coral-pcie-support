@@ -13,12 +13,16 @@ To install from a specific release:
 curl -fsSL https://github.com/truenas-community-sysexts/coral-pcie-support/releases/download/k6.12.91-gasket1.0-18.4-r41/install.sh | sudo bash
 ```
 
-Or download `coral.raw` manually and install it:
+Or install that exact release's `coral.raw` from a local directory. `install.sh` loads `coral-lib.sh` from beside itself, so download both next to the image:
 
 ```bash
-# Download coral.raw from a specific release
-curl -fSL https://github.com/truenas-community-sysexts/coral-pcie-support/releases/download/k6.12.91-gasket1.0-18.4-r41/coral.raw -o /tmp/coral.raw
-sudo bash install.sh /tmp/coral.raw
+TAG=k6.12.91-gasket1.0-18.4-r41   # replace with the release tag you want
+mkdir -p /tmp/coral-install && cd /tmp/coral-install
+for f in coral.raw coral.raw.sha256 install.sh coral-lib.sh; do
+  curl -fsSL -o "$f" "https://github.com/truenas-community-sysexts/coral-pcie-support/releases/download/${TAG}/$f"
+done
+sha256sum -c coral.raw.sha256   # must print: coral.raw: OK
+sudo bash install.sh coral.raw
 ```
 
 > **Warning:** Using a `coral.raw` built for a different kernel will fail to load

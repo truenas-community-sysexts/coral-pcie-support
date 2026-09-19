@@ -20,6 +20,15 @@ channel never serves them. A k-tag whose body lost the Target kernel row
 counts only once promoted: unpromoted, it cannot be told apart from a
 preview build, and the safe default is to build.
 
+Transition guard: coverage only means "installable" if the installer users
+actually run matches by kernel. The README one-liner runs the install.sh
+attached to the repo's Latest release ($LATEST_TAG), and only k-tag builds
+ship the kernel-aware installer; a v-tag Latest still matches exact TrueNAS
+versions and would answer "No stable release found" for the skipped
+version. So unless Latest is a k-tag, nothing counts as coverage. An empty
+$LATEST_TAG (failed lookup) is treated the same way: the fail-safe
+direction is always "build".
+
 Matching rules mirror install.sh's release-selection snippet;
 tests/test_kernel_coverage.py holds both to the shared fixtures.
 """
@@ -29,23 +38,9 @@ import re
 import sys
 
 
-def main():
-    # gh api --paginate emits one JSON array per page, concatenated.
-    decoder = json.JSONDecoder()
-    text = sys.stdin.read()
-    data = []
-    pos = 0
-    while pos < len(text):
-        if text[pos].isspace():
-            pos += 1
-            continue
-        doc, pos = decoder.raw_decode(text, pos)
-        if isinstance(doc, list):
-            data.extend(doc)
-
-    kver = os.environ['NEW_KERNEL']
+def find_coverage(data, kver, driver):
+    """(kind, tag) for the release covering kver, or None."""
     short = kver.split('-')[0]
-    driver = os.environ['CURRENT_DRIVER']
     ker_re = re.compile(r'Target kernel\s*\|\s*`([^`]+)`')
     hdr_re = re.compile(r'for TrueNAS SCALE (\S+)')
     pre_re = re.compile(r'-(BETA|RC)', re.IGNORECASE)
@@ -71,12 +66,42 @@ def main():
         if tk == kver or (not tk and promoted
                           and tag.startswith(f'k{short}-gasket')):
             if promoted:
-                print(f'promoted {tag}')
-                return
+                return ('promoted', tag)
             if pending is None:
                 pending = tag
     if pending:
-        print(f'pending {pending}')
+        return ('pending', pending)
+    return None
+
+
+def main():
+    # gh api --paginate emits one JSON array per page, concatenated.
+    decoder = json.JSONDecoder()
+    text = sys.stdin.read()
+    data = []
+    pos = 0
+    while pos < len(text):
+        if text[pos].isspace():
+            pos += 1
+            continue
+        doc, pos = decoder.raw_decode(text, pos)
+        if isinstance(doc, list):
+            data.extend(doc)
+
+    found = find_coverage(data, os.environ['NEW_KERNEL'],
+                          os.environ['CURRENT_DRIVER'])
+    if not found:
+        return
+    # Transition guard (see module docstring).
+    latest = os.environ.get('LATEST_TAG', '')
+    if not latest.startswith('k'):
+        why = (f'Latest release {latest} predates the kernel-aware installer'
+               if latest else 'the Latest release lookup failed')
+        print(f'NOTE: {found[0]} coverage by {found[1]} ignored: {why}, so '
+              'the one-liner cannot serve this version by kernel match; '
+              'building.', file=sys.stderr)
+        return
+    print(f'{found[0]} {found[1]}')
 
 
 if __name__ == '__main__':

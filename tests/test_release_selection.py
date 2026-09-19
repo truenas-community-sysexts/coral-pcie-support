@@ -131,6 +131,8 @@ class KernelMatch(unittest.TestCase):
         self.assertIn("v25.10.5-gasket1.0-18.4-r40", p.stderr)
         self.assertIn("awaiting hardware-test", p.stderr)
         self.assertIn("(prerelease)", p.stderr)
+        # Nothing installs on its own after promotion; the user re-runs.
+        self.assertIn("re-run this installer once it is promoted", p.stderr)
 
     def test_no_match_pending_hint_excludes_preview_builds(self):
         # A preview (BETA/RC) build is never promoted, so a stable box whose
