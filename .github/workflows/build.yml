@@ -959,6 +959,7 @@ jobs:
                 `ls -l /dev/apex_*              # crw-rw-rw- ... /dev/apex_0 (plus /dev/apex_1 on a Dual Edge TPU)`,
                 `lsmod | grep -E 'gasket|apex'  # two lines: apex, and gasket (listing apex as its user)`,
                 "```",
+                `Upgrading over an earlier build for a different kernel (for example after a TrueNAS update): \`--check\` here also shows 1 fail, \`PREINIT logged an error this boot\` with a \`Kernel version mismatch\` message. That entry was written by the boot before this install and clears after the reboot in step 4, where 0 fail is required.`,
                 ``,
                 `### 4. Reboot and re-verify`,
                 "```bash",

@@ -165,6 +165,25 @@ class Procedure(unittest.TestCase):
             self.assertLessEqual({"coral.raw", "coral.raw.sha256",
                                   "install.sh", "coral-lib.sh"}, got)
 
+    def test_step_3_explains_the_upgrade_preinit_fail(self):
+        # Installing over a build for another kernel: the previous boot's
+        # PREINIT mismatch error shows as 1 fail until the step 4 reboot.
+        # The quoted texts must be what install.sh and coral-preinit.sh print.
+        for body in (self.stable, self.preview):
+            step3 = body[body.index("### 3. Verify"):
+                         body.index("### 4. Reboot and re-verify")]
+            self.assertIn("Upgrading over an earlier build for a different "
+                          "kernel", step3)
+            self.assertIn("`--check` here also shows 1 fail, `PREINIT logged "
+                          "an error this boot` with a `Kernel version "
+                          "mismatch` message", step3)
+            self.assertIn("clears after the reboot in step 4, where 0 fail "
+                          "is required", step3)
+        self.assertIn("PREINIT logged an error this boot",
+                      INSTALL_SH.read_text())
+        self.assertIn("Kernel version mismatch",
+                      (ROOT / "scripts" / "coral-preinit.sh").read_text())
+
     def test_sign_off_semantics(self):
         self.assertIn("**Close as completed** promotes", self.stable)
         self.assertIn("**Close as not planned** rejects it", self.stable)
