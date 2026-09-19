@@ -64,20 +64,20 @@ previous sysext is no longer compatible.
 4. If a matching release exists, re-run the installer:
 
    ```bash
-   curl -fsSL https://github.com/truenas-community-sysexts/coral-pcie-support/releases/latest/download/install.sh \
-     | sudo bash
+   curl -fsSL https://raw.githubusercontent.com/truenas-community-sysexts/coral-pcie-support/main/get.sh | sudo bash
    ```
 
-   The installer downloads the matching `coral.raw` and replaces the
-   stale sysext on the persistent pool. The next boot succeeds.
+   It downloads the `coral.raw` approved for your TrueNAS train and built
+   for your kernel, and replaces the stale sysext on the persistent pool.
+   The next boot succeeds.
 
-   > **During the kernel-keyed migration:** this one liner runs the
-   > `install.sh` attached to the current Latest release. Until a
-   > kernel-tagged (`k...`) release is Latest, that installer still matches
-   > your exact TrueNAS version, so it can report no release even though
-   > step 3 found one built for your kernel. In that case install that
-   > release's image directly, as in
-   > [Installing a Specific Version](install.md#installing-a-specific-version).
+   If it reports **no release found for your kernel** although step 3
+   found one, that build has not been approved for your TrueNAS train yet:
+   its hardware test is still open, and the message names the issue (or
+   says none is open yet). Nothing untested is installed automatically. To
+   test the build yourself, follow the steps in its hardware-test issue, or
+   pin it with `--release=<tag>` as in
+   [Installing a Specific Version](install.md#installing-a-specific-version).
 
 5. If no matching release exists yet, the daily auto-build workflow
    picks up new TrueNAS versions within ~24 hours of the ISO being

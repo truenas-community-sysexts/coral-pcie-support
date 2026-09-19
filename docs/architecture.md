@@ -264,4 +264,4 @@ Unlike the Hailo sysext (which caps the driver version at Frigate's pin), the ga
 
 ### Consolidated commit and dispatch
 
-If either upstream moved, the workflow writes the state file in one commit and dispatches a single build with `mark_latest='false'`. Auto-builds publish releases without the "Latest" badge. A human verifies the build on Coral hardware and promotes it via the GitHub UI.
+If either upstream moved, the workflow writes the state file in one commit and dispatches the builds. Every build publishes as a pre-release with a hardware-test issue. A human verifies the build on Coral hardware and closes the issue as completed: `promote.yml` then approves the build for the TrueNAS train it was built for (a `verified-train` marker in its release notes) and, for a stable build, promotes it. Installs only ever receive approved builds (see [Per-train approval](build.md#per-train-approval)).

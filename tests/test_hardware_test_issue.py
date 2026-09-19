@@ -264,5 +264,64 @@ class Procedure(unittest.TestCase):
         self.assertIn("never promoted to Latest", self.preview)
 
 
+
+class TrainApproval(unittest.TestCase):
+    # promote.yml approves the build for the train of the TrueNAS version in
+    # its notes header, which is this issue's TRUENAS_VERSION; the issue
+    # tells the tester which train that is.
+
+    def test_stable_issue_names_its_train(self):
+        body = render_issue("25.10.7", K105, run="14")["body"]
+        self.assertIn("approves it for TrueNAS train `25.10`", body)
+        self.assertIn(f"boxes whose kernel is `{K105}`", body)
+
+    def test_preview_issue_names_its_train_and_does_not_promote(self):
+        body = render_issue("26.0.0-BETA.3", K42, run="15", preview=True)["body"]
+        self.assertIn("**Close as completed** approves [`k6.18.42-gasket1.0-18.4-r15`]",
+                      body)
+        self.assertIn("for TrueNAS train `26`", body)
+        self.assertIn("Until this test signs it off for TrueNAS train `26`, "
+                      "installs never receive it.", body)
+        self.assertIn("**Close as not planned** rejects it", body)
+
+
+class NoUntestedPublish(unittest.TestCase):
+    # A full release with no verified-train marker counts as approved for
+    # every train, so no build may be published as one.
+
+    def test_build_yml_has_no_mark_latest(self):
+        self.assertNotIn("mark_latest", BUILD_YML.read_text())
+        self.assertNotIn("MARK_LATEST", BUILD_YML.read_text())
+
+    def test_every_build_publishes_as_a_prerelease(self):
+        text = BUILD_YML.read_text()
+        step = text[text.index("- name: Publish the draft"):
+                    text.index("- name: Create hardware-test issue")]
+        self.assertIn("PUBLISH_ARGS=(-F draft=false -F prerelease=true)", step)
+        self.assertNotIn("make_latest=true", step)
+        self.assertEqual(step.count("PUBLISH_ARGS=("), 1)
+
+    def test_every_build_gets_its_hardware_test_issue(self):
+        text = BUILD_YML.read_text()
+        step = text[text.index(STEP_NAME):]
+        step = step[:step.index("with:")]
+        self.assertNotIn("if:", step)
+
+    def test_check_releases_dispatches_only_inputs_build_yml_takes(self):
+        # A workflow_dispatch with an input the workflow does not declare is
+        # rejected (HTTP 422), so a dropped input must leave every caller.
+        text = BUILD_YML.read_text()
+        dispatch = text[text.index("workflow_dispatch:"):text.index("workflow_call:")]
+        declared = set(re.findall(r"^      (\w+):$", dispatch, re.MULTILINE))
+        check = (ROOT / ".github" / "workflows" / "check-releases.yml").read_text()
+        blocks = re.findall(r"inputs: \{(.*?)\}", check, re.S)
+        self.assertEqual(len(blocks), 2)
+        for block in blocks:
+            used = set(re.findall(r"^\s+(\w+):", block, re.MULTILINE))
+            self.assertTrue(used)
+            self.assertLessEqual(used, declared)
+        self.assertNotIn("mark_latest", check)
+
+
 if __name__ == "__main__":
     unittest.main()

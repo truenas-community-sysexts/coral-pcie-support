@@ -26,7 +26,19 @@ A single daily GitHub Actions workflow (`check-releases.yml`, 06:00 UTC) monitor
 - **TrueNAS preview half**: tracks the latest TrueNAS 26 beta (`truenas_preview.version`, e.g. `26.0.0-BETA.2`). TrueNAS 26 betas are not tagged in `scale-build` and ship no GITMANIFEST, so this half scrapes the browsable channel listing in `truenas_preview.channel_url` (`iso.sys.truenas.net/TrueNAS-26-BETA/`), picks the highest `X.Y.Z-BETA.N` / `-RC.N`, and gates on the ISO being uploaded. The runner is pinned (`truenas_preview.runner`, `ubuntu-24.04`) since there is no GITMANIFEST to auto-resolve from, and the build downloads the ISO via an `iso_url` override.
 - **Gasket half**: monitors [feranick/gasket-driver](https://github.com/feranick/gasket-driver) releases for new tags. Feranick actively maintains kernel compatibility fixes on top of the archived `google/gasket-driver`. When a new release appears, it bumps `gasket.driver` and `gasket.ref`.
 
-If anything moved, the workflow writes the file in one commit and dispatches builds. A **gasket bump builds both** the stable (25.x) and preview (26-beta) targets, so each driver release ships both; a TrueNAS-only bump on one channel builds just that channel. All auto-builds publish without the "Latest" badge. Stable builds: verify on Coral PCIe hardware, then close the `hardware-test` issue to promote to Latest. **Preview (26-beta) builds stay pre-releases permanently and are never promoted to Latest** (they carry the `preview-hardware-test` label, which `promote.yml` ignores) so stable installs are unaffected; install them explicitly by tag.
+If anything moved, the workflow writes the file in one commit and dispatches builds. A **gasket bump builds both** the stable (25.x) and preview (26-beta) targets, so each driver release ships both; a TrueNAS-only bump on one channel builds just that channel. Every build publishes as a pre-release with a hardware-test issue, and no install receives it until that test signs it off (see [Per-train approval](#per-train-approval)). Stable builds: verify on Coral PCIe hardware, then close the `hardware-test` issue as completed to promote the build and approve it for its train. **Preview (26-beta) builds stay pre-releases permanently and are never promoted to Latest**: closing their `preview-hardware-test` issue as completed approves them for train 26 only.
+
+## Per-train approval
+
+A hardware test approves a build for the TrueNAS **train** it was built for, and nothing unapproved is installed on any box, stable or preview. The train is the major version from 26 on (every 26.x release, betas included, is train `26`) and major.minor before that (`25.10`).
+
+- `build.yml` publishes **every** build as a pre-release and opens one issue for it: `hardware-test` for a stable target, `preview-hardware-test` for a preview (BETA/RC) one. There is no way to publish a build straight to Latest: a full release with no approval marker counts as approved for every train (the grandfather rule below), so it would reach every box untested. The old `mark_latest` dispatch input is gone.
+- `promote.yml` runs when either issue is closed as **completed**. It reads the TrueNAS version from the release notes header (`for TrueNAS SCALE <version>`), derives its train, and appends `<!-- verified-train: <train> -->` to the release notes, once.
+  - A stable build is also promoted as before: it becomes a full release, takes **Latest** only if it ranks highest (newest target kernel first, the existing `cmpRank`), and gets its changelog. Marker, promotion and changelog go in one release update.
+  - A preview build gets the marker only: it stays a pre-release and is never promoted.
+  - Closing as **not planned** changes nothing.
+- `get.sh`, `install.sh` and `uninstall.sh` select, among the releases built for the running kernel, the newest one whose notes carry the box's train marker, or that is a full release with no marker at all (**grandfathered**: promoted before per-train sign-off). GitHub's Latest flag is cosmetic for them: they never select by it.
+- Preview builds that were signed off before per-train approval (2026-09-19) are pre-releases, so the grandfather rule does not cover them; they get a one-time `verified-train: 26` marker, added to their release notes by hand.
 
 ## Kernel-keyed builds
 
@@ -36,7 +48,9 @@ release's kernel. The pipeline is keyed accordingly:
 
 - check-releases.yml resolves a new stable version's kernel from its
   rootfs.mtree manifest. If a promoted release for that kernel (with the
-  current driver) already exists, no build is dispatched;
+  current driver) already exists and is approved for the new version's
+  train (the installer's rule: its train marker, or no marker at all), no
+  build is dispatched;
   tracked-versions.json still updates and the installer serves the new
   version by kernel match. If the only coverage is an unpromoted build
   awaiting hardware test, no duplicate build is dispatched either, but the
@@ -64,7 +78,10 @@ release's kernel. The pipeline is keyed accordingly:
   e.g. `k6.12.91`). Releases published before the migration keep their
   `v<version>` tags; both install the same way.
 - Hardware-test promotion is per build, which now means per kernel: one
-  verification covers every TrueNAS version sharing that kernel.
+  verification covers every TrueNAS version of the build's train sharing
+  that kernel. A build approved for one train only never counts as
+  coverage for another train's version; that version gets its own build
+  and its own hardware test.
 
 ## Custom Builds
 
@@ -79,8 +96,8 @@ If you need a build for a TrueNAS version that doesn't have a pre-built release,
    - **Gasket driver version**, e.g., `1.0-18` (used in the release tag and for tracking)
    - **Gasket ref**, e.g., `1.0-18.4` (git ref/tag to check out in `feranick/gasket-driver`)
    - **Train name**, e.g., `Goldeye` (must match the train iXsystems publishes the ISO under at `download.truenas.com/TrueNAS-SCALE-<train>/<version>/`). The current tracked train lives in [`.github/tracked-versions.json`](../.github/tracked-versions.json).
-4. The workflow builds `coral.raw` and creates a GitHub release in your fork (~10-20 min, ~5 min cached)
-5. Use the install script from your fork's release, or download `coral.raw` and install manually
+4. The workflow builds `coral.raw` and creates a GitHub release in your fork (~10-20 min, ~5 min cached). Like every build, it is a pre-release with a hardware-test issue.
+5. Install it pinned to its tag: `curl -fsSL https://raw.githubusercontent.com/truenas-community-sysexts/coral-pcie-support/main/get.sh | sudo bash -s -- --repo=YOU/coral-pcie-support --release=<tag>`. Or close its hardware-test issue in your fork as completed (with Actions enabled there, `promote.yml` approves it), after which `get.sh --repo=YOU/coral-pcie-support` selects it like any approved build.
 
 ### When to Build Custom
 

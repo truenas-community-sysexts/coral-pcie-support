@@ -4,16 +4,39 @@ Both parsers of the release-notes format (install.sh's release selection and
 gen-supported-versions.py) test against this one builder, so a template change
 breaks both suites instead of silently orphaning one fixture.
 test_notes_header_contract.py holds its header to the one build.yml renders.
+
+Per-train approval: `verified` appends one verified-train line per train in
+the form promote.yml writes it (test_workflow_contract.py holds the form to
+what promote.yml actually appends).
 """
+import zlib
+
+
+def marker(train):
+    return f"<!-- verified-train: {train} -->"
 
 
 def release(tag, version="", train="Goldeye", kver=None, prerelease=False,
-            draft=False, published="2026-01-01T00:00:00Z"):
+            draft=False, published="2026-01-01T00:00:00Z", verified=()):
     body = (f"## Coral PCIe TPU Sysext for TrueNAS SCALE {version} ({train})\n"
             "| Field | Value |\n| --- | --- |\n"
             "| Gasket driver | `1.0-18.4` |\n")
     if kver:
         body += f"| Target kernel | `{kver}` |\n"
-    return {"tag_name": tag, "body": body, "prerelease": prerelease,
-            "draft": draft, "html_url": f"https://example.test/{tag}",
-            "published_at": published}
+    for t in verified:
+        body += f"\n\n{marker(t)}\n"
+    return {"id": zlib.crc32(tag.encode()), "tag_name": tag, "body": body,
+            "prerelease": prerelease, "draft": draft,
+            "html_url": f"https://example.test/{tag}",
+            "published_at": published, "created_at": published}
+
+
+def issue(tag, labels=("hardware-test",), number=1, preview=None, title=None):
+    """A hardware-test issue carrying the markers build.yml writes
+    (release-tag, and preview-build when `preview` is not None)."""
+    body = f"**Release:** {tag}\n<!-- release-tag: {tag} -->\n"
+    if preview is not None:
+        body += f"<!-- preview-build: {'true' if preview else 'false'} -->\n"
+    return {"number": number, "title": title or f"Hardware test: {tag}",
+            "body": body, "labels": [{"name": name} for name in labels],
+            "html_url": f"https://example.test/issues/{number}"}

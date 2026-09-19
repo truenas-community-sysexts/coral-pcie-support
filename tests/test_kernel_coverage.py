@@ -5,6 +5,7 @@ TrueNAS version's kernel. Its selection rules must stay in lockstep with
 install.sh's release-selection snippet, so both test against the shared
 release fixtures.
 """
+import importlib.util
 import json
 import subprocess
 import unittest
@@ -14,6 +15,12 @@ from release_fixtures import release
 
 SCRIPT = (Path(__file__).resolve().parents[1]
           / ".github" / "scripts" / "check-kernel-coverage.py")
+CHECK_RELEASES = (Path(__file__).resolve().parents[1]
+                  / ".github" / "workflows" / "check-releases.yml")
+
+_spec = importlib.util.spec_from_file_location("check_kernel_coverage", SCRIPT)
+cov = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(cov)
 
 K93 = "6.12.93-production+truenas"
 # A kernel-tagged Latest ships the kernel-aware installer, so coverage
@@ -22,12 +29,14 @@ KTAG_LATEST = "k6.12.91-gasket1.0-18.4-r41"
 
 
 def run_coverage_full(releases, kver=K93, driver="1.0-18.4", raw=None,
-                      latest=KTAG_LATEST):
+                      latest=KTAG_LATEST, version=None):
     text = raw if raw is not None else json.dumps(releases)
     env = {"NEW_KERNEL": kver, "CURRENT_DRIVER": driver,
            "PATH": "/usr/bin:/bin"}
     if latest is not None:
         env["LATEST_TAG"] = latest
+    if version is not None:
+        env["NEW_VERSION"] = version
     p = subprocess.run(["python3", str(SCRIPT)], input=text,
                        capture_output=True, text=True, env=env)
     if p.returncode != 0:
@@ -179,6 +188,70 @@ class LatestInstallerGuard(unittest.TestCase):
         p = run_coverage_full([], latest=self.VTAG_LATEST)
         self.assertEqual(p.stdout.strip(), "")
         self.assertEqual(p.stderr, "")
+
+
+class TrainApproval(unittest.TestCase):
+    # check-releases.yml passes the new stable version (NEW_VERSION): only a
+    # promoted release the installer would serve to that version's train
+    # counts, the same approval rule as install.sh's selection. A stable
+    # sign-off promotes and writes the marker in one update, so promoted
+    # builds are approved for the train they were built for.
+
+    def test_grandfathered_promoted_release_covers_every_train(self):
+        rel = [release("v25.10.5-gasket1.0-18.4-r40", "25.10.5", kver=K93)]
+        for version in ("25.10.9", "26.0.1"):
+            self.assertEqual(run_coverage(rel, version=version),
+                             "promoted v25.10.5-gasket1.0-18.4-r40", version)
+
+    def test_promoted_release_with_the_trains_marker_covers(self):
+        rel = [release("k6.12.93-gasket1.0-18.4-r50", "25.10.8", kver=K93,
+                       verified=["25.10"])]
+        self.assertEqual(run_coverage(rel, version="25.10.9"),
+                         "promoted k6.12.93-gasket1.0-18.4-r50")
+
+    def test_promoted_release_for_another_train_only_means_build(self):
+        # Not served to this train, and no hardware test for this train
+        # will ever come for it: not pending either.
+        rel = [release("k6.12.93-gasket1.0-18.4-r50", "25.10.8", kver=K93,
+                       verified=["25.10"])]
+        self.assertEqual(run_coverage(rel, version="26.0.1"), "")
+
+    def test_approved_release_preferred_over_one_for_another_train(self):
+        rels = [release("k6.12.93-gasket1.0-18.4-r51", "26.0.0", kver=K93,
+                        verified=["26"]),
+                release("k6.12.93-gasket1.0-18.4-r50", "25.10.8", kver=K93,
+                        verified=["25.10"])]
+        self.assertEqual(run_coverage(rels, version="25.10.9"),
+                         "promoted k6.12.93-gasket1.0-18.4-r50")
+
+    def test_pending_is_unchanged(self):
+        rel = [release("k6.12.93-gasket1.0-18.4-r50", "25.10.8", kver=K93,
+                       prerelease=True)]
+        self.assertEqual(run_coverage(rel, version="25.10.9"),
+                         "pending k6.12.93-gasket1.0-18.4-r50")
+
+    def test_signed_off_preview_build_still_never_covers(self):
+        rel = [release("k6.12.93-gasket1.0-18.4-r50", "26.0.0-BETA.3", kver=K93,
+                       prerelease=True, verified=["26"])]
+        self.assertEqual(run_coverage(rel, version="26.0.0"), "")
+
+    def test_version_without_a_train_builds(self):
+        rel = [release("v25.10.5-gasket1.0-18.4-r40", "25.10.5", kver=K93)]
+        p = run_coverage_full(rel, version="MASTER")
+        self.assertEqual(p.stdout.strip(), "")
+        self.assertIn("no TrueNAS train", p.stderr)
+
+    def test_train_key_matches_the_installers(self):
+        from test_promote import VERSIONS
+        from test_release_selection import train_key
+        for v in VERSIONS:
+            self.assertEqual(cov.train_key(v), train_key(v) or "", v)
+
+    def test_check_releases_passes_the_new_version(self):
+        text = CHECK_RELEASES.read_text()
+        start = text.index("- name: Resolve kernel and check coverage")
+        step = text[start:text.index("check-kernel-coverage.py", start)]
+        self.assertIn("NEW_VERSION: ${{ steps.truenas.outputs.version }}", step)
 
 
 class Pagination(unittest.TestCase):
