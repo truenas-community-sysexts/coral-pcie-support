@@ -318,7 +318,7 @@ class GetSh(Stubbed):
         p = self.get("--repo=someone/coral-fork", f"--release={R7}")
         self.assertIn(f"RAN install.sh from {R7} of someone/coral-fork", p.stdout)
         self.assertIn("CORAL_REPO=someone/coral-fork", p.stdout)
-        p = self.get(version="25.10.2", kver=K33, CORAL_REPO="someone/coral-fork")
+        self.get(version="25.10.2", kver=K33, CORAL_REPO="someone/coral-fork")
         self.assertTrue(any(logged_host(c) == "api.github.com"
                             and logged_path(c) == "/repos/someone/coral-fork/releases"
                             for c in self.calls()), self.calls())
