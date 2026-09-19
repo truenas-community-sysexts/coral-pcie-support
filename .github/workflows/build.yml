@@ -952,6 +952,8 @@ jobs:
                 "```",
                 `With several data pools and no existing Coral config, the installer asks which pool keeps its files; add \`--pool=NAME\` to choose up front.`,
                 ``,
+                `Reinstalling on the same kernel while the Coral modules are loaded (for example over an earlier build for this kernel): the installer also prints \`WARNING: insmod gasket failed\` and \`WARNING: insmod apex failed (device may not be present)\`, each after an \`insmod: ERROR: could not insert module ...: File exists\` line. That is harmless: the modules already loaded stay in use, and this build's modules load at the reboot in step 4.`,
+                ``,
                 `### 3. Verify`,
                 `From the same directory:`,
                 "```bash",
