@@ -205,9 +205,10 @@ jobs:
       # version string, and point releases usually reuse the previous kernel.
       # Resolve the new version's kernel from its rootfs.mtree manifest (small
       # text fetch, no ISO); if a release for (kernel, current driver) already
-      # exists, no build is needed; only a PROMOTED one lets the tracked
-      # version advance (see check-kernel-coverage.py). An unresolvable
-      # kernel falls through to "build", the safe default.
+      # exists, no build is needed; only a PROMOTED one approved for the new
+      # version's TrueNAS train (NEW_VERSION, read by the script) lets the
+      # tracked version advance (see check-kernel-coverage.py). An
+      # unresolvable kernel falls through to "build", the safe default.
       # Transition guard: coverage only counts while the Latest release is a
       # k-tag. The README one-liner runs Latest's install.sh, and only k-tag
       # builds ship the kernel-aware installer; a v-tag Latest (or a failed
@@ -566,10 +567,11 @@ jobs:
       #   - preview: built when the TrueNAS beta or the driver moved.
       # So a driver bump produces BOTH a 25.x and a 26-beta build ("each
       # release has both"); a TrueNAS-only bump on one channel builds only that
-      # channel. mark_latest='false' on both keeps unverified auto-builds out of
-      # /releases/latest; preview builds additionally never promote (build.yml
-      # gives them the preview-hardware-test label and promote.yml refuses
-      # beta/RC tags).
+      # channel. Every build publishes as a prerelease that no install
+      # receives until its hardware-test issue is closed as completed
+      # (build.yml has no publish-to-Latest path); preview builds additionally
+      # never promote (build.yml gives them the preview-hardware-test label,
+      # and promote.yml only approves them for their train).
       # -----------------------------------------------------------------------
       - name: Trigger stable build
         if: >-
@@ -589,8 +591,7 @@ jobs:
                 gasket_driver_version: '${{ steps.write.outputs.gasket_driver }}',
                 gasket_ref:           '${{ steps.write.outputs.gasket_ref }}',
                 train_name:           '${{ steps.write.outputs.train }}',
-                runner:               '${{ steps.runner.outputs.runner }}',
-                mark_latest:          'false'
+                runner:               '${{ steps.runner.outputs.runner }}'
               }
             });
             console.log('Dispatched stable build.yml: TrueNAS ${{ steps.write.outputs.truenas_version }} (${{ steps.write.outputs.train }}), gasket ${{ steps.write.outputs.gasket_driver }}, runner ${{ steps.runner.outputs.runner }}');
@@ -612,8 +613,7 @@ jobs:
                 gasket_ref:           '${{ steps.write.outputs.gasket_ref }}',
                 train_name:           '${{ steps.write.outputs.preview_train }}',
                 runner:               '${{ steps.write.outputs.preview_runner }}',
-                iso_url:              '${{ steps.write.outputs.preview_iso_url }}',
-                mark_latest:          'false'
+                iso_url:              '${{ steps.write.outputs.preview_iso_url }}'
               }
             });
             console.log('Dispatched preview build.yml: TrueNAS ${{ steps.write.outputs.preview_version }} (${{ steps.write.outputs.preview_train }}), gasket ${{ steps.write.outputs.gasket_driver }}, runner ${{ steps.write.outputs.preview_runner }}, iso_url ${{ steps.write.outputs.preview_iso_url }}');
