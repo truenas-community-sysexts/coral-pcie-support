@@ -15,6 +15,7 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from urllib.parse import urlparse
 
 from release_fixtures import release
 from test_release_selection import run_block
@@ -25,11 +26,31 @@ INSTALL_SH = ROOT / "scripts" / "install.sh"
 UNINSTALL_SH = ROOT / "scripts" / "uninstall.sh"
 REPO = "truenas-community-sysexts/coral-pcie-support"
 
+
+def logged_host(line):
+    """Hostname of the URL in a stub-log line ("curl <url>"), or "" for other lines."""
+    parts = line.split()
+    if len(parts) > 1 and parts[0] == "curl":
+        return urlparse(parts[1]).hostname or ""
+    return ""
+
+
+def logged_path(line):
+    """Path of the URL in a stub-log line ("curl <url>"), or "" for other lines."""
+    parts = line.split()
+    if len(parts) > 1 and parts[0] == "curl":
+        return urlparse(parts[1]).path
+    return ""
+
+
 CURL_STUB = textwrap.dedent("""\
     #!/usr/bin/env python3
     import hashlib, json, os, re, sys
+    from urllib.parse import urlparse
     args = sys.argv[1:]
-    url = next(a for a in args if "://" in a)
+    url = next(a for a in args if a.startswith("https://"))
+    parts = urlparse(url)
+    host, path = parts.hostname, parts.path
     out = args[args.index("-o") + 1] if "-o" in args else None
     with open(os.environ["STUB_LOG"], "a") as f:
         f.write("curl " + url + "\\n")
@@ -39,15 +60,15 @@ CURL_STUB = textwrap.dedent("""\
                 f.write(text)
         else:
             sys.stdout.write(text)
-    if "api.github.com" in url and "/issues?" in url:
+    if host == "api.github.com" and path.endswith("/issues"):
         emit(open(os.environ["STUB_ISSUES"]).read())
-    elif "api.github.com" in url:
-        page = int(re.search(r"[?&]page=(\\d+)", url).group(1))
+    elif host == "api.github.com":
+        page = int(re.search(r"(?:^|&)page=(\\d+)", parts.query).group(1))
         pages = json.load(open(os.environ["STUB_PAGES"]))
         emit(json.dumps(pages[page - 1] if page <= len(pages) else []))
-    elif "/releases/download/" in url:
-        repo = url.split("github.com/")[1].split("/releases/")[0]
-        tag, asset = url.split("/releases/download/")[1].split("/")
+    elif host == "github.com" and "/releases/download/" in path:
+        repo = path.split("/releases/download/")[0].strip("/")
+        tag, asset = path.split("/releases/download/")[1].split("/")
         old = tag in os.environ.get("STUB_OLD", "").split()
         image = f"coral.raw of {tag}\\n"
         if asset == "coral.raw":
@@ -184,8 +205,10 @@ class Stubbed(unittest.TestCase):
         return self.log.read_text().splitlines()
 
     def downloads(self):
-        return [c.split("/releases/download/")[1] for c in self.calls()
-                if "/releases/download/" in c]
+        return [logged_path(c).split("/releases/download/")[1]
+                for c in self.calls()
+                if logged_host(c) == "github.com"
+                and "/releases/download/" in logged_path(c)]
 
 
 class GetSh(Stubbed):
@@ -282,7 +305,8 @@ class GetSh(Stubbed):
         self.assertIn(f"RAN install.sh from {R14} of {REPO} with: --release={R14} --dry-run ",
                       p.stdout)
         self.assertIn(f"IMAGE: coral.raw of {R14}", p.stdout)
-        self.assertFalse(any(c.startswith("midclt") or "api.github.com" in c
+        self.assertFalse(any(c.startswith("midclt")
+                             or logged_host(c) == "api.github.com"
                              for c in self.calls()), self.calls())
 
     def test_pinned_uninstall(self):
@@ -295,8 +319,9 @@ class GetSh(Stubbed):
         self.assertIn(f"RAN install.sh from {R7} of someone/coral-fork", p.stdout)
         self.assertIn("CORAL_REPO=someone/coral-fork", p.stdout)
         p = self.get(version="25.10.2", kver=K33, CORAL_REPO="someone/coral-fork")
-        self.assertTrue(any("repos/someone/coral-fork/releases" in c
-                            for c in self.calls()))
+        self.assertTrue(any(logged_host(c) == "api.github.com"
+                            and logged_path(c) == "/repos/someone/coral-fork/releases"
+                            for c in self.calls()), self.calls())
 
     def test_empty_flags_are_refused(self):
         self.assertEqual(self.get("--release=").returncode, 2)
@@ -450,7 +475,8 @@ class UninstallSh(Stubbed):
         p = self.uninstall(f"--release={R13}", "--force")
         self.assertEqual(p.stdout.splitlines()[0],
                          f"RAN restore.sh from {R13} of {REPO} with: --force")
-        self.assertFalse(any("api.github.com" in c for c in self.calls()))
+        self.assertFalse(any(logged_host(c) == "api.github.com"
+                             for c in self.calls()))
 
     def test_sibling_restore_runs_without_network(self):
         p = self.uninstall(f"--release={R13}", "--force", sibling=True)
@@ -510,7 +536,8 @@ class InstallSh(Stubbed):
         p = self.install(f"--release={R14}", version="25.10.7", kver=K105)
         self.assertEqual(p.returncode, 0, p.stderr + p.stdout)
         self.assertIn(f"Release {R14} (pinned with --release)", p.stdout)
-        self.assertFalse(any("system.info" in c or "api.github.com" in c
+        self.assertFalse(any("system.info" in c
+                             or logged_host(c) == "api.github.com"
                              for c in self.calls()), self.calls())
 
     def test_local_image_with_release_records_the_release(self):
