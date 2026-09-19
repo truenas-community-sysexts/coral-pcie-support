@@ -4,26 +4,31 @@
 
 ## Installing a Specific Version
 
-Release tags encode the versions: `v<truenas>-gasket<driver>-r<run>` (e.g., `v25.10.3.1-gasket1.0-18-r23`).
+Release tags encode the kernel the build targets: `k<kernel>-gasket<driver>-r<run>` (e.g., `k6.12.91-gasket1.0-18.4-r41`). Releases published before the kernel-keyed migration keep their older `v<truenas>-gasket<driver>-r<run>` tags (e.g., `v25.10.3.1-gasket1.0-18-r23`); both install the same way. The README supported versions table maps TrueNAS versions to the release serving them.
 
 To install from a specific release:
 
 ```bash
 # Download install.sh from a specific release tag
-curl -fsSL https://github.com/truenas-community-sysexts/coral-pcie-support/releases/download/v25.10.3.1-gasket1.0-18-r23/install.sh | sudo bash
+curl -fsSL https://github.com/truenas-community-sysexts/coral-pcie-support/releases/download/k6.12.91-gasket1.0-18.4-r41/install.sh | sudo bash
 ```
 
-Or download `coral.raw` manually and install it:
+Or install that exact release's `coral.raw` from a local directory. `install.sh` loads `coral-lib.sh` from beside itself, so download both next to the image:
 
 ```bash
-# Download coral.raw from a specific release
-curl -fSL https://github.com/truenas-community-sysexts/coral-pcie-support/releases/download/v25.10.3.1-gasket1.0-18-r23/coral.raw -o /tmp/coral.raw
-sudo bash install.sh /tmp/coral.raw
+TAG=k6.12.91-gasket1.0-18.4-r41   # replace with the release tag you want
+mkdir -p /tmp/coral-install && cd /tmp/coral-install
+for f in coral.raw coral.raw.sha256 install.sh coral-lib.sh; do
+  curl -fsSL -o "$f" "https://github.com/truenas-community-sysexts/coral-pcie-support/releases/download/${TAG}/$f"
+done
+sha256sum -c coral.raw.sha256   # must print: coral.raw: OK
+sudo bash install.sh coral.raw
 ```
 
-> **Warning:** Using a `coral.raw` built for a different TrueNAS version will fail to load
-> the kernel module. The module is compiled against exact kernel headers, so a version mismatch
-> means `insmod` will refuse to load it. Always use the release matching your TrueNAS version.
+> **Warning:** Using a `coral.raw` built for a different kernel will fail to load
+> the kernel module. The module is compiled against exact kernel headers, so a kernel mismatch
+> means `insmod` will refuse to load it. Always use the release matching your running kernel
+> (`uname -r`); the installer checks this before touching the system.
 
 ## Install Options
 
