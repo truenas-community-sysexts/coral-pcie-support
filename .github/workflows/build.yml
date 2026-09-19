@@ -847,9 +847,13 @@ jobs:
             const labelDescription = isPreview
               ? 'Preview (TrueNAS beta) build verification, never auto-promoted to Latest'
               : 'Auto-build awaiting hardware verification';
-            const title = isPreview
-              ? `Preview hardware test: TrueNAS ${process.env.TRUENAS_VERSION} / Gasket ${process.env.GASKET_DRIVER} (${tag})`
-              : `Hardware test: TrueNAS ${process.env.TRUENAS_VERSION} / Gasket ${process.env.GASKET_DRIVER} (${tag})`;
+            // Title: what to test | on what | which build. The tag goes last,
+            // verbatim: the duplicate check below matches on it. The kernel
+            // is the real one cut at its first '-' (6.12.105), left out when
+            // unknown rather than printed empty.
+            const shortKver = (process.env.REAL_KVER || '').split('-')[0];
+            const target = `TrueNAS ${process.env.TRUENAS_VERSION}${shortKver ? ` (kernel ${shortKver})` : ''}`;
+            const title = `${isPreview ? 'Preview hardware test' : 'Hardware test'}: Coral TPU driver Gasket ${process.env.GASKET_DRIVER} | ${target} | ${tag}`;
 
             // Ensure the label exists (idempotent, no-ops if already present).
             try {

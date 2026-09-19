@@ -39,21 +39,27 @@ const captured = [];
 console.log = (...a) => process.stderr.write(a.join(' ') + '\\n');
 const github = { rest: { issues: {
   createLabel: async () => ({}),
-  listForRepo: async () => ({ data: [] }),
+  listForRepo: async () => ({ data: JSON.parse(process.env.OPEN_TITLES || '[]')
+    .map((title) => ({ title })) }),
   create: async (args) => { captured.push(args); },
 } } };
 const context = { repo: { owner: 'truenas-community-sysexts', repo: 'coral-pcie-support' } };
 (async () => {
 %s
-})().then(() => process.stdout.write(JSON.stringify(captured[0])),
+})().then(() => process.stdout.write(JSON.stringify(captured[0] ?? null)),
           (e) => { process.stderr.write(String(e && e.stack || e)); process.exit(1); });
 """
 
 
-def render_issue(version, kver, run="50", driver="1.0-18.4", preview=False):
+def render_issue(version, kver, run="50", driver="1.0-18.4", preview=False,
+                 short_kver=None, open_titles=()):
+    """The issues.create() arguments, or None when the step skips creating
+    one because an issue in open_titles already names the tag."""
     env = dict(os.environ, TRUENAS_VERSION=version, GASKET_DRIVER=driver,
-               RUN_NUMBER=run, SHORT_KVER=kver.split("-")[0], REAL_KVER=kver,
-               IS_PREVIEW="true" if preview else "false")
+               RUN_NUMBER=run, REAL_KVER=kver,
+               SHORT_KVER=kver.split("-")[0] if short_kver is None else short_kver,
+               IS_PREVIEW="true" if preview else "false",
+               OPEN_TITLES=json.dumps(list(open_titles)))
     p = subprocess.run(["node", "-e", HARNESS % issue_script()],
                        capture_output=True, text=True, env=env)
     if p.returncode != 0:
@@ -107,6 +113,54 @@ class Markers(unittest.TestCase):
         issue = render_issue("26.0.0-BETA.3", K42, run="10", preview=True)
         self.assertIn("<!-- preview-build: true -->", issue["body"].splitlines())
         self.assertEqual(issue["labels"], ["preview-hardware-test"])
+
+
+class Title(unittest.TestCase):
+    # What to test | on what | which build. The step skips creating an issue
+    # when an open one's title includes the tag, so the tag must appear in
+    # the title verbatim; it goes last.
+    STABLE_TAG = "k6.12.105-gasket1.0-18.4-r14"
+    PREVIEW_TAG = "k6.18.42-gasket1.0-18.4-r15"
+
+    def test_stable_title(self):
+        issue = render_issue("25.10.7", K105, run="14")
+        self.assertEqual(issue["title"],
+                         "Hardware test: Coral TPU driver Gasket 1.0-18.4 | "
+                         "TrueNAS 25.10.7 (kernel 6.12.105) | "
+                         f"{self.STABLE_TAG}")
+
+    def test_preview_title(self):
+        issue = render_issue("26.0.0-BETA.3", K42, run="15", preview=True)
+        self.assertEqual(issue["title"],
+                         "Preview hardware test: Coral TPU driver Gasket 1.0-18.4 | "
+                         "TrueNAS 26.0.0-BETA.3 (kernel 6.18.42) | "
+                         f"{self.PREVIEW_TAG}")
+
+    def test_unknown_kernel_is_left_out(self):
+        for preview, prefix in ((False, "Hardware test"),
+                                (True, "Preview hardware test")):
+            issue = render_issue("25.10.7", "", run="14", preview=preview,
+                                 short_kver="6.12.105")
+            self.assertEqual(issue["title"],
+                             f"{prefix}: Coral TPU driver Gasket 1.0-18.4 | "
+                             f"TrueNAS 25.10.7 | {self.STABLE_TAG}")
+
+    def test_title_ends_with_the_tag(self):
+        for version, kver, run, preview, tag in (
+                ("25.10.7", K105, "14", False, self.STABLE_TAG),
+                ("26.0.0-BETA.3", K42, "15", True, self.PREVIEW_TAG)):
+            title = render_issue(version, kver, run=run, preview=preview)["title"]
+            self.assertIn(tag, title)
+            self.assertTrue(title.endswith(f" | {tag}"), title)
+
+    def test_open_issue_with_this_title_blocks_a_duplicate(self):
+        # The step's own title must satisfy its duplicate check.
+        for version, kver, run, preview in (
+                ("25.10.7", K105, "14", False),
+                ("26.0.0-BETA.3", K42, "15", True)):
+            title = render_issue(version, kver, run=run, preview=preview)["title"]
+            self.assertIsNone(render_issue(version, kver, run=run, preview=preview,
+                                           open_titles=[title]))
 
 
 class Procedure(unittest.TestCase):
