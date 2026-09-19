@@ -6,8 +6,15 @@
 # Unlike the Hailo sysext, no firmware download or injection is needed.
 # The Coral PCIe TPU works with just the kernel modules (gasket + apex).
 #
+# Usually run by get.sh (the README one-liner), which picks the release,
+# downloads this script from it and hands it that release's verified
+# coral.raw. Run directly, it selects the release itself by the same rule:
+# the newest release approved for this box's TrueNAS train and built for its
+# running kernel (see the approved-release block below).
+#
 # Usage: curl -fsSL <release-url>/install.sh | sudo bash
 #    or: sudo ./install.sh [path-to-coral.raw]
+#    or: sudo ./install.sh --release=TAG    (that release, no selection)
 #    or: sudo ./install.sh --pool=fast
 #    or: sudo ./install.sh --check          (probe an existing install)
 #    or: sudo ./install.sh --dry-run        (validate without modifying)
@@ -313,8 +320,367 @@ REPO="${CORAL_REPO:-truenas-community-sysexts/coral-pcie-support}"
 # to "${PERSIST_DIR}/coral.raw" once the persistent pool is resolved below.
 CORAL_RAW=""
 
+# BEGIN approved-release (a verbatim copy lives in get.sh, scripts/install.sh
+# and scripts/uninstall.sh, each a self-contained curl|bash script;
+# tests/test_release_selection.py fails CI when the copies differ)
+
+# TrueNAS version of this box: the version string decides the release channel
+# (stable vs preview) and the train. It is never inferred from the kernel
+# number.
+detect_truenas_version() {
+    local v
+    v=$(midclt call system.info | python3 -c "
+import sys, json
+try:
+    print(json.load(sys.stdin)['version'])
+except Exception as e:
+    print(f'ERROR: {e}', file=sys.stderr)
+    sys.exit(1)
+") || { echo "ERROR: Failed to detect TrueNAS version" >&2; return 1; }
+    [ -n "$v" ] || { echo "ERROR: TrueNAS version is empty" >&2; return 1; }
+    printf '%s\n' "$v"
+}
+
+# Train key of a TrueNAS version: the major version from 26 on (26.0.0-BETA.3
+# and 26.1.2 are both train 26), major.minor before that (25.10.7 is 25.10,
+# 25.04.2.6 is 25.04). Fails on anything else. The same rule as
+# nvidia-driver-support's get.sh; promote.yml's trainKey and
+# check-kernel-coverage.py's train_key are held to it by the tests.
+truenas_train_key() {
+    local v="$1" major minor
+    major="${v%%.*}"
+    case "$major" in ''|*[!0-9]*) return 1 ;; esac
+    if [ "$major" -ge 26 ]; then
+        printf '%s\n' "$major"
+        return 0
+    fi
+    case "$v" in *.*) ;; *) return 1 ;; esac
+    minor="${v#*.}"
+    minor="${minor%%[!0-9]*}"
+    [ -n "$minor" ] || return 1
+    printf '%s.%s\n' "$major" "$minor"
+}
+
+# Every page of the repo's releases, appended to $1 as one JSON array per
+# page. The legacy releases the version fallback needs are the oldest,
+# exactly the ones a single newest-first page drops once the repo outgrows
+# it. Only a full page can have more behind it; anything else (short page,
+# API error object) ends the loop, and the selection reports API errors.
+fetch_release_pages() {
+    local out="$1" page=1 page_json page_len
+    : > "$out"
+    while :; do
+        page_json=$(curl -sS --max-time 30 "https://api.github.com/repos/${REPO}/releases?per_page=100&page=${page}") \
+            || { echo "ERROR: Failed to query GitHub releases" >&2; return 1; }
+        printf '%s\n' "$page_json" >> "$out"
+        page_len=$(printf '%s' "$page_json" | python3 -c "
+import sys, json
+try:
+    doc = json.load(sys.stdin)
+except Exception:
+    print(0)
+else:
+    print(len(doc) if isinstance(doc, list) else 0)
+")
+        [ "$page_len" -eq 100 ] || break
+        page=$((page + 1))
+    done
+}
+
+# The newest release approved for train $3 on a box running TrueNAS $2 and
+# kernel $4, chosen from the release pages in $5. $1 is the mode: "install"
+# (the image is installed, so it must be built for this kernel) or "scripts"
+# (only the release's scripts run: --check, --help, uninstall, a user's own
+# image; see the selection below). $6, when given, is a file holding the
+# repo's open issues, so the no-match message can name the hardware tests
+# that are waiting. Prints the tag; explains on stderr and fails when there
+# is none (exit 3 when nothing is approved, 1 on an API or parse error).
+select_approved_release() {
+    MODE="$1" VERSION="$2" TRAIN="$3" KVER="$4" ISSUES_FILE="${6:-}" REPO="$REPO" python3 -c "
+# BEGIN release-selection (extracted verbatim by tests/test_release_selection.py;
+# single-quoted strings only, \x60 stands for backtick, no dollar signs: this
+# code lives inside a double-quoted bash string)
+import sys, json, os, re
+# stdin carries one JSON array per fetched API page, concatenated.
+decoder = json.JSONDecoder()
+text = sys.stdin.read()
+data = []
+pos = 0
+while pos < len(text):
+    if text[pos].isspace():
+        pos += 1
+        continue
+    try:
+        doc, pos = decoder.raw_decode(text, pos)
+    except ValueError:
+        print('Failed to parse GitHub API response', file=sys.stderr)
+        sys.exit(1)
+    if isinstance(doc, dict) and 'message' in doc:
+        msg = doc['message']
+        if 'rate limit' in msg.lower():
+            print('GitHub API rate limit exceeded (60 requests/hour for unauthenticated calls).', file=sys.stderr)
+            print('Wait a few minutes and try again.', file=sys.stderr)
+        else:
+            print(f'GitHub API error: {msg}', file=sys.stderr)
+        sys.exit(1)
+    elif isinstance(doc, list):
+        data.extend(doc)
+    else:
+        print('Failed to parse GitHub API response', file=sys.stderr)
+        sys.exit(1)
+if not text.strip():
+    print('Failed to parse GitHub API response', file=sys.stderr)
+    sys.exit(1)
+version = os.environ['VERSION']
+train = os.environ['TRAIN']
+kver = os.environ.get('KVER', '')
+repo = os.environ.get('REPO', '')
+# Scripts only (--check, --help, uninstall, a user's own image): no module
+# from the release is loaded, so a build for another kernel of this train
+# serves when this kernel has no approved build. See the selection below.
+scripts_only = os.environ.get('MODE', 'install') == 'scripts'
+# Channel gate: a BETA/RC box is on the preview channel and may install
+# prereleases (preview builds are never promoted). A stable box only installs
+# promoted (non-prerelease) builds: an unverified stable build stays a
+# prerelease until a human closes its hardware-test issue, and auto-installing
+# one would bypass that gate. On both channels the approval gate below also
+# applies: no unverified build is installed, not even on a preview box.
+vu = version.upper()
+is_preview = ('-BETA' in vu) or ('-RC' in vu)
+ker_re = re.compile(r'Target kernel\s*\|\s*\x60([^\x60]+)\x60')
+hdr_re = re.compile(r'for TrueNAS SCALE (\S+)')
+def target_kernel(release):
+    m = ker_re.search(release.get('body') or '')
+    return m.group(1) if m else ''
+def preview_release(release):
+    # Kernel-keyed tags (k6.18.23-...) carry no BETA marker, so the tag
+    # check alone stopped covering new preview builds; the notes header
+    # still names the TrueNAS version they were built for.
+    tu = release.get('tag_name', '').upper()
+    if ('-BETA' in tu) or ('-RC' in tu):
+        return True
+    m = hdr_re.search(release.get('body') or '')
+    hv = m.group(1).upper() if m else ''
+    return ('-BETA' in hv) or ('-RC' in hv)
+# Approval gate (per-train sign-off). promote.yml writes one verified-train
+# line into the notes when a hardware-test issue for the build closes as
+# completed; the train is the one the build was made for. A release with a
+# line for this train is approved here; lines for other trains only are not.
+# A full release with no line at all was promoted before per-train sign-off
+# and is grandfathered for every train. Nothing else qualifies: there is no
+# fallback to an unverified build, on stable or preview boxes.
+vt_re = re.compile(r'^[ \t]*<!--\s*verified-train:\s*([^\s>]+?)\s*-->', re.M)
+def verified_trains(release):
+    return set(vt_re.findall(release.get('body') or ''))
+def approved(release):
+    trains = verified_trains(release)
+    if trains:
+        return train in trains
+    return not release.get('prerelease') and not preview_release(release)
+def published(release):
+    return release.get('published_at') or release.get('created_at') or ''
+# The TrueNAS train a build was made for: the version in its notes header (a
+# legacy v-tag also names it), keyed like truenas_train_key.
+def built_train(release):
+    m = hdr_re.search(release.get('body') or '')
+    v = m.group(1) if m else ''
+    if not v:
+        tm = re.match(r'v(.+?)-gasket', release.get('tag_name', ''))
+        v = tm.group(1) if tm else ''
+    major, dot, rest = v.partition('.')
+    if not major.isdigit():
+        return ''
+    if int(major) >= 26:
+        return major
+    minor = ''
+    for ch in rest:
+        if not ch.isdigit():
+            break
+        minor += ch
+    return major + '.' + minor if dot and minor else ''
+# A stable box also refuses preview (BETA/RC) releases outright. The old
+# version-prefix match made installing one structurally impossible; with
+# kernel matching, the prerelease flag alone would be one mispublished
+# release away from serving a beta build to stable boxes.
+candidates = [r for r in data
+              if not r.get('draft')
+              and (is_preview or (not r.get('prerelease') and not preview_release(r)))
+              and approved(r)]
+# The Target kernel notes row is the primary key. A k-tag whose body lost
+# the row still encodes its short kernel in the tag; check-releases counts
+# such a release as covering its kernel (and skips builds for it), so the
+# installer must serve it by the same rule. A body row always wins over the
+# tag: it is written from REAL_KVER at build time, so a tag/body mismatch
+# means a mispublished release that must not be served.
+short = kver.split('-')[0]
+def kernel_match(release):
+    tk = target_kernel(release)
+    if tk:
+        return tk == kver
+    return release.get('tag_name', '').startswith(f'k{short}-gasket')
+if scripts_only:
+    # Only a release built for this box's own train serves, grandfathered or
+    # not: an older train's install.sh --check inspects another install
+    # layout, and its restore.sh runs another removal flow. The build for
+    # this kernel if it is approved, else the newest approved one of the
+    # train.
+    own = [r for r in candidates if built_train(r) == train]
+    matches = [r for r in own if kver and kernel_match(r)] or own
+else:
+    matches = [r for r in candidates if kernel_match(r)]
+if not matches:
+    # Releases published before the Target kernel row existed can only be
+    # matched the old way: exact TrueNAS version. Never fall back onto a
+    # release that DOES advertise a kernel: a version match with the wrong
+    # kernel would ship modules that cannot load.
+    prefix = f'v{version}-'
+    matches = [r for r in candidates
+               if r.get('tag_name', '').startswith(prefix) and not target_kernel(r)]
+    if matches:
+        print(f'NOTE: no release advertises kernel {kver}; matched by TrueNAS version instead.', file=sys.stderr)
+if not matches:
+    channel = 'preview (beta)' if is_preview else 'stable'
+    if scripts_only:
+        print(f'No {channel} release built for TrueNAS train {train} is approved yet (TrueNAS {version}).', file=sys.stderr)
+        print('Its scripts are needed here, and a release built for another train does not', file=sys.stderr)
+        print('serve: pin one with --release=TAG to use it anyway.', file=sys.stderr)
+    else:
+        print(f'No {channel} release found for kernel {kver} (TrueNAS {version}).', file=sys.stderr)
+        print(f'Only a release approved for TrueNAS train {train} is installed: a hardware test on', file=sys.stderr)
+        print('that train signed it off, or it was promoted before per-train sign-off.', file=sys.stderr)
+    # Builds this box would take once approved: its channel, its kernel (by
+    # the notes row, as check-releases counts pending builds) or for scripts
+    # its train, not approved. A stable box never takes a preview build, so
+    # none is promised to it.
+    pending = sorted([r for r in data
+                      if not r.get('draft')
+                      and (is_preview or not preview_release(r))
+                      and (built_train(r) == train if scripts_only else target_kernel(r) == kver)
+                      and not approved(r)], key=published, reverse=True)
+    what = f'TrueNAS train {train}' if scripts_only else 'this kernel'
+    if pending:
+        if is_preview:
+            print(f'A build for {what} exists but is a prerelease awaiting its preview hardware', file=sys.stderr)
+            print('test; re-run this installer once it is signed off.', file=sys.stderr)
+        else:
+            print(f'A build for {what} exists but is a prerelease awaiting hardware-test', file=sys.stderr)
+            print('promotion; re-run this installer once it is promoted.', file=sys.stderr)
+        print('Builds waiting for a hardware test:', file=sys.stderr)
+        for r in pending[:5]:
+            t = r.get('tag_name', '?')
+            mark = ' (prerelease)' if r.get('prerelease') else ''
+            print(f'  {t}{mark}', file=sys.stderr)
+        # Name the open hardware-test issues for those builds, from the issue
+        # list approved_release_tag fetched into ISSUES_FILE.
+        issues = None
+        path = os.environ.get('ISSUES_FILE', '')
+        if path:
+            try:
+                with open(path) as f:
+                    issues = json.load(f)
+            except Exception:
+                issues = None
+        if isinstance(issues, list):
+            tags = [r.get('tag_name', '') for r in pending[:5]]
+            rt_re = re.compile(r'<!--\s*release-tag:\s*(\S+?)\s*-->')
+            waiting = []
+            for i in issues:
+                if not isinstance(i, dict) or 'pull_request' in i:
+                    continue
+                names = [(l.get('name') if isinstance(l, dict) else l) for l in i.get('labels') or []]
+                if 'hardware-test' not in names and 'preview-hardware-test' not in names:
+                    continue
+                m = rt_re.search(i.get('body') or '')
+                it = m.group(1) if m else ''
+                title = i.get('title') or ''
+                if it in tags or any(t and t in title for t in tags):
+                    waiting.append(i)
+            if waiting:
+                print('Open hardware-test issues for these builds, waiting for a tester:', file=sys.stderr)
+                for i in waiting:
+                    num, ttl, url = i.get('number'), i.get('title'), i.get('html_url')
+                    print(f'  #{num} {ttl}', file=sys.stderr)
+                    print(f'  {url}', file=sys.stderr)
+            else:
+                print('No hardware-test issue is open for these builds yet.', file=sys.stderr)
+        else:
+            label = 'preview-hardware-test' if is_preview else 'hardware-test'
+            print('Open hardware tests:', file=sys.stderr)
+            print(f'  https://github.com/{repo}/issues?q=is%3Aissue+is%3Aopen+label%3A{label}', file=sys.stderr)
+    else:
+        print(f'No build for {what} is waiting for a hardware test, so no hardware-test issue', file=sys.stderr)
+        print('exists for it yet.', file=sys.stderr)
+    print('Otherwise a build may not exist yet (the daily check builds within ~24h of an', file=sys.stderr)
+    print('ISO going live), or you can build one yourself from the repo. Available releases:', file=sys.stderr)
+    for r in [x for x in data if not x.get('draft')]:
+        t = r.get('tag_name', '?')
+        k = target_kernel(r) or 'no kernel recorded'
+        mark = ' (prerelease)' if r.get('prerelease') else ''
+        print(f'  {t} ({k}){mark}', file=sys.stderr)
+    sys.exit(3)
+matches.sort(key=published, reverse=True)
+print(matches[0]['tag_name'], end='')
+# END release-selection
+" < "$5"
+}
+
+# The release to use on this box when none is pinned with --release: the
+# newest one approved for its TrueNAS train and built for its running
+# kernel. With --scripts-only (--check, --help, uninstall, a user's own
+# image: only the release's scripts run) the approved build for this kernel,
+# else the newest approved one built for this train, never one built for
+# another train. Prints the tag; with nothing approved, the message names
+# the hardware tests that are waiting.
+approved_release_tag() {
+    local mode=install version train kver pages err issues tag="" rc=0
+    [ "${1:-}" = --scripts-only ] && mode=scripts
+    version=$(detect_truenas_version) || return 1
+    train=$(truenas_train_key "$version") || {
+        echo "ERROR: cannot derive a TrueNAS train from version '${version}'" >&2
+        return 1
+    }
+    # The running kernel is the match key: kernel modules bind to the exact
+    # kernel string, and many TrueNAS versions share one kernel, so the right
+    # release is the one built for this kernel, whichever TrueNAS version
+    # produced it.
+    kver=$(uname -r)
+    [ -n "$kver" ] || { echo "ERROR: could not read the running kernel (uname -r)" >&2; return 1; }
+    echo "Detected TrueNAS version: ${version} (train ${train}, kernel: ${kver})" >&2
+    if [ "$mode" = scripts ]; then
+        echo "Searching for an approved release of this train, preferring this kernel..." >&2
+    else
+        echo "Searching for an approved release matching this kernel..." >&2
+    fi
+    pages=$(mktemp) || return 1
+    err=$(mktemp) || { rm -f "$pages"; return 1; }
+    if fetch_release_pages "$pages"; then
+        tag=$(select_approved_release "$mode" "$version" "$train" "$kver" "$pages" 2>"$err") || rc=$?
+    else
+        rc=1
+    fi
+    if [ "$rc" -eq 3 ]; then
+        # Nothing approved: select again with the open issues, so the message
+        # names the hardware tests waiting. Best effort: without the issue
+        # list it links the open tests instead.
+        if issues=$(mktemp); then
+            curl -sS --max-time 30 "https://api.github.com/repos/${REPO}/issues?state=open&per_page=100" \
+                > "$issues" 2>/dev/null || : > "$issues"
+            select_approved_release "$mode" "$version" "$train" "$kver" "$pages" "$issues" \
+                > /dev/null 2>"$err" || true
+            rm -f "$issues"
+        fi
+    fi
+    cat "$err" >&2
+    rm -f "$pages" "$err"
+    [ "$rc" -eq 0 ] || return 1
+    echo "Found release: ${tag} (approved for TrueNAS train ${train})" >&2
+    printf '%s\n' "$tag"
+}
+# END approved-release
+
 # --- Parse CLI arguments ---
 LOCAL_RAW=""
+RELEASE_TAG=""
 POOL_NAME=""
 PERSIST_PATH=""
 CHECK_MODE=0
@@ -334,6 +700,10 @@ for arg in "$@"; do
             PERSIST_PATH="${arg#*=}"
             [ -n "$PERSIST_PATH" ] || { echo "ERROR: --persist-path= requires a non-empty value" >&2; exit 2; }
             ;;
+        --release=*)
+            RELEASE_TAG="${arg#*=}"
+            [ -n "$RELEASE_TAG" ] || { echo "ERROR: --release= requires a release tag (e.g., --release=k6.12.91-gasket1.0-18.4-r41)" >&2; exit 2; }
+            ;;
         --check) CHECK_MODE=1 ;;
         --dry-run) DRY_RUN=1 ;;
         --help)
@@ -344,6 +714,8 @@ for arg in "$@"; do
             echo "                                Can also be set via CORAL_REPO env var."
             echo "  --pool=NAME                   ZFS pool for persistent config (e.g., fast)"
             echo "  --persist-path=PATH           Exact path for persistent config"
+            echo "  --release=TAG                 Install that release (no selection); with a path to coral.raw,"
+            echo "                                record it as that release's image"
             echo "  --check                       Probe an existing install (read-only) and report status"
             echo "  --dry-run                     Validate everything (downloads, checksums, network) without modifying the system"
             echo "  --help                        Show this help"
@@ -409,20 +781,28 @@ if [ -n "$PERSIST_PATH" ]; then
 fi
 
 # Source shared library (provides coral_init_script_lookup).
-# Try the sibling file first (checkout or extracted release); fall back to
-# downloading from the release for the curl|bash case.
+# Try the sibling file first (checkout, extracted release, or get.sh, which
+# downloads it beside this script); fall back to downloading it from the
+# release this run uses (--release, or the one selected for this box) for
+# the curl|bash case, never from whatever GitHub marks Latest.
 _source_coral_lib() {
-    local dir
+    local dir tag
     dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)" || dir=""
     if [ -n "$dir" ] && [ -f "${dir}/coral-lib.sh" ]; then
         # shellcheck source=scripts/coral-lib.sh
         source "${dir}/coral-lib.sh"
         return 0
     fi
+    # The lib has no kernel code: with no release chosen yet (--check, or a
+    # local coral.raw), an approved release of this train serves.
+    tag="$RELEASE_TAG"
+    if [ -z "$tag" ]; then
+        tag=$(approved_release_tag --scripts-only) || return 1
+    fi
     local tmp
     tmp=$(mktemp /tmp/coral-lib.XXXXXXXXXX)
     if curl -fsSL --max-time 30 \
-           "https://github.com/${REPO}/releases/latest/download/coral-lib.sh" \
+           "https://github.com/${REPO}/releases/download/${tag}/coral-lib.sh" \
            -o "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
         # shellcheck source=scripts/coral-lib.sh
         source "$tmp"
@@ -432,13 +812,16 @@ _source_coral_lib() {
     rm -f "$tmp"
     return 1
 }
-_source_coral_lib || {
-    echo "ERROR: Could not load coral-lib.sh (not found locally, download failed)." >&2
-    echo "  Run from the release directory, or ensure network access to GitHub." >&2
-    exit 1
+load_coral_lib() {
+    _source_coral_lib || {
+        echo "ERROR: Could not load coral-lib.sh (not found locally, download failed)." >&2
+        echo "  Run from the release directory, or ensure network access to GitHub." >&2
+        exit 1
+    }
 }
 
 if [ "$CHECK_MODE" = "1" ]; then
+    load_coral_lib
     do_check
     exit $?
 fi
@@ -449,6 +832,31 @@ cleanup() {
     [ -n "${WORK_DIR:-}" ] && rm -rf "$WORK_DIR"
 }
 trap cleanup EXIT INT TERM
+
+# The release to install: --release=TAG as given, else the newest release
+# approved for this box's TrueNAS train and built for its running kernel
+# (approved_release_tag above). A local coral.raw needs no release; with
+# --release too (get.sh passes both) it is recorded as that release's image.
+if [ -z "$LOCAL_RAW" ]; then
+    if [ -n "$RELEASE_TAG" ]; then
+        echo "Release ${RELEASE_TAG} (pinned with --release)"
+    else
+        RELEASE_TAG=$(approved_release_tag) || exit 1
+    fi
+fi
+
+if [ -n "$RELEASE_TAG" ]; then
+    # Extract gasket driver version from the tag for informational purposes.
+    # Tags look like k6.12.91-gasket1.0-18.4-r41 (kernel-keyed) or
+    # v25.10.3.1-gasket1.0-18.4-r1 (legacy); both carry the gasket token.
+    GASKET_VERSION=$(echo "$RELEASE_TAG" | sed -n 's/.*gasket\([0-9][0-9._-]*[0-9]\).*/\1/p')
+    if [ -z "$GASKET_VERSION" ]; then
+        echo "ERROR: Could not parse gasket driver version from release tag '${RELEASE_TAG}'." >&2
+        echo "  Expected format: k<kernel>-gasket<driver>-r<run> (or legacy v<truenas>-gasket<driver>-r<run>)" >&2
+        exit 1
+    fi
+    echo "Gasket driver version: ${GASKET_VERSION}"
+fi
 
 # If a local path is provided, use it; otherwise download from GitHub releases
 if [ -n "$LOCAL_RAW" ]; then
@@ -465,180 +873,6 @@ if [ -n "$LOCAL_RAW" ]; then
     echo "Using local coral.raw: $LOCAL_RAW"
     cp "$LOCAL_RAW" "${WORK_DIR}/coral.raw"
 else
-    # Detect TrueNAS version: the version string decides the release channel
-    # (stable vs preview). It is never inferred from the kernel number.
-    VERSION=$(midclt call system.info | python3 -c "
-import sys, json
-try:
-    print(json.load(sys.stdin)['version'])
-except Exception as e:
-    print(f'ERROR: {e}', file=sys.stderr)
-    sys.exit(1)
-") || { echo "ERROR: Failed to detect TrueNAS version"; exit 1; }
-    [ -z "$VERSION" ] && { echo "ERROR: TrueNAS version is empty"; exit 1; }
-
-    # The running kernel is the match key: kernel modules bind to the exact
-    # kernel string, and many TrueNAS versions share one kernel, so the right
-    # release is the one built for this kernel, whichever TrueNAS version
-    # produced it.
-    KVER=$(uname -r)
-    [ -z "$KVER" ] && { echo "ERROR: could not read the running kernel (uname -r)"; exit 1; }
-    echo "Detected TrueNAS version: ${VERSION} (kernel: ${KVER})"
-
-    # Find the release built for this kernel
-    echo "Searching for a release matching this kernel..."
-    export VERSION KVER
-    # Fetch every releases page. The legacy releases the version fallback needs
-    # are the oldest, exactly the ones a single newest-first page drops once
-    # the repo outgrows it. Each page's JSON array is appended as-is; the
-    # selection snippet merges them and reports API error objects.
-    RELEASES_JSON="${WORK_DIR}/releases.json"
-    : > "$RELEASES_JSON"
-    PAGE=1
-    while :; do
-        PAGE_JSON=$(curl -sS --max-time 30 "https://api.github.com/repos/${REPO}/releases?per_page=100&page=${PAGE}") \
-            || { echo "ERROR: Failed to query GitHub releases"; exit 1; }
-        printf '%s\n' "$PAGE_JSON" >> "$RELEASES_JSON"
-        # Only a full page can have more behind it; anything else (short page,
-        # API error object) ends the loop.
-        PAGE_LEN=$(printf '%s' "$PAGE_JSON" | python3 -c "
-import sys, json
-try:
-    doc = json.load(sys.stdin)
-except Exception:
-    print(0)
-else:
-    print(len(doc) if isinstance(doc, list) else 0)
-")
-        [ "$PAGE_LEN" -eq 100 ] || break
-        PAGE=$((PAGE + 1))
-    done
-    RELEASE_TAG=$(python3 -c "
-# BEGIN release-selection (extracted verbatim by tests/test_release_selection.py;
-# single-quoted strings only, \x60 stands for backtick, no dollar signs: this
-# code lives inside a double-quoted bash string)
-import sys, json, os, re
-# stdin carries one JSON array per fetched API page, concatenated.
-decoder = json.JSONDecoder()
-text = sys.stdin.read()
-data = []
-pos = 0
-while pos < len(text):
-    if text[pos].isspace():
-        pos += 1
-        continue
-    try:
-        doc, pos = decoder.raw_decode(text, pos)
-    except ValueError:
-        print('Failed to parse GitHub API response', file=sys.stderr)
-        sys.exit(1)
-    if isinstance(doc, dict) and 'message' in doc:
-        msg = doc['message']
-        if 'rate limit' in msg.lower():
-            print('GitHub API rate limit exceeded (60 requests/hour for unauthenticated calls).', file=sys.stderr)
-            print('Wait a few minutes and try again.', file=sys.stderr)
-        else:
-            print(f'GitHub API error: {msg}', file=sys.stderr)
-        sys.exit(1)
-    elif isinstance(doc, list):
-        data.extend(doc)
-    else:
-        print('Failed to parse GitHub API response', file=sys.stderr)
-        sys.exit(1)
-if not text.strip():
-    print('Failed to parse GitHub API response', file=sys.stderr)
-    sys.exit(1)
-version = os.environ['VERSION']
-kver = os.environ['KVER']
-# Channel gate: a BETA/RC box is on the preview channel and may install
-# prereleases (preview builds are never promoted). A stable box only installs
-# promoted (non-prerelease) builds: an unverified stable build stays a
-# prerelease until a human closes its hardware-test issue, and auto-installing
-# one would bypass that gate.
-vu = version.upper()
-is_preview = ('-BETA' in vu) or ('-RC' in vu)
-ker_re = re.compile(r'Target kernel\s*\|\s*\x60([^\x60]+)\x60')
-hdr_re = re.compile(r'for TrueNAS SCALE (\S+)')
-def target_kernel(release):
-    m = ker_re.search(release.get('body') or '')
-    return m.group(1) if m else ''
-def preview_release(release):
-    # Kernel-keyed tags (k6.18.23-...) carry no BETA marker, so the tag
-    # check alone stopped covering new preview builds; the notes header
-    # still names the TrueNAS version they were built for.
-    tu = release.get('tag_name', '').upper()
-    if ('-BETA' in tu) or ('-RC' in tu):
-        return True
-    m = hdr_re.search(release.get('body') or '')
-    hv = m.group(1).upper() if m else ''
-    return ('-BETA' in hv) or ('-RC' in hv)
-# A stable box also refuses preview (BETA/RC) releases outright. The old
-# version-prefix match made installing one structurally impossible; with
-# kernel matching, the prerelease flag alone would be one mispublished
-# release away from serving a beta build to stable boxes.
-candidates = [r for r in data
-              if not r.get('draft')
-              and (is_preview or (not r.get('prerelease') and not preview_release(r)))]
-# The Target kernel notes row is the primary key. A k-tag whose body lost
-# the row still encodes its short kernel in the tag; check-releases counts
-# such a release as covering its kernel (and skips builds for it), so the
-# installer must serve it by the same rule. A body row always wins over the
-# tag: it is written from REAL_KVER at build time, so a tag/body mismatch
-# means a mispublished release that must not be served.
-short = kver.split('-')[0]
-def kernel_match(release):
-    tk = target_kernel(release)
-    if tk:
-        return tk == kver
-    return release.get('tag_name', '').startswith(f'k{short}-gasket')
-matches = [r for r in candidates if kernel_match(r)]
-if not matches:
-    # Releases published before the Target kernel row existed can only be
-    # matched the old way: exact TrueNAS version. Never fall back onto a
-    # release that DOES advertise a kernel: a version match with the wrong
-    # kernel would ship modules that cannot load.
-    prefix = f'v{version}-'
-    matches = [r for r in candidates
-               if r.get('tag_name', '').startswith(prefix) and not target_kernel(r)]
-    if matches:
-        print(f'NOTE: no release advertises kernel {kver}; matched by TrueNAS version instead.', file=sys.stderr)
-if not matches:
-    channel = 'preview (beta)' if is_preview else 'stable'
-    print(f'No {channel} release found for kernel {kver} (TrueNAS {version}).', file=sys.stderr)
-    # not preview_release: previews never promote, so the hint would be false
-    pending = [r for r in data
-               if not r.get('draft') and r.get('prerelease')
-               and not preview_release(r)
-               and target_kernel(r) == kver]
-    if pending and not is_preview:
-        print('A build for this kernel exists but is a prerelease awaiting hardware-test', file=sys.stderr)
-        print('promotion; re-run this installer once it is promoted.', file=sys.stderr)
-    print('Otherwise a build may not exist yet (the daily check builds within ~24h of an', file=sys.stderr)
-    print('ISO going live), or you can build one yourself from the repo. Available releases:', file=sys.stderr)
-    for r in [x for x in data if not x.get('draft')]:
-        t = r.get('tag_name', '?')
-        k = target_kernel(r) or 'no kernel recorded'
-        mark = ' (prerelease)' if r.get('prerelease') else ''
-        print(f'  {t} ({k}){mark}', file=sys.stderr)
-    sys.exit(1)
-matches.sort(key=lambda r: r.get('published_at') or r.get('created_at') or '', reverse=True)
-print(matches[0]['tag_name'], end='')
-# END release-selection
-" < "$RELEASES_JSON") || { echo "ERROR: Failed to query GitHub releases"; exit 1; }
-
-    echo "Found release: ${RELEASE_TAG}"
-
-    # Extract gasket driver version from the tag for informational purposes.
-    # Tags look like k6.12.91-gasket1.0-18.4-r41 (kernel-keyed) or
-    # v25.10.3.1-gasket1.0-18.4-r1 (legacy); both carry the gasket token.
-    GASKET_VERSION=$(echo "$RELEASE_TAG" | sed -n 's/.*gasket\([0-9][0-9._-]*[0-9]\).*/\1/p')
-    if [ -z "$GASKET_VERSION" ]; then
-        echo "ERROR: Could not parse gasket driver version from release tag '${RELEASE_TAG}'." >&2
-        echo "  Expected format: k<kernel>-gasket<driver>-r<run> (or legacy v<truenas>-gasket<driver>-r<run>)" >&2
-        exit 1
-    fi
-    echo "Gasket driver version: ${GASKET_VERSION}"
-
     # Download coral.raw and checksum
     BASE_URL="https://github.com/${REPO}/releases/download/${RELEASE_TAG}"
     echo "Downloading coral.raw..."
@@ -657,6 +891,10 @@ print(matches[0]['tag_name'], end='')
     fi
     echo "Checksum OK"
 fi
+
+# coral-lib.sh (for the PREINIT registration below), loaded before anything
+# on the system changes.
+load_coral_lib
 
 # --- Extract PREINIT script from sysext ---
 # The sysext bundles coral-preinit.sh at usr/lib/coral/coral-preinit.sh.

@@ -7,7 +7,15 @@ page, concatenated) and reports what covers the kernel in $NEW_KERNEL for
 the driver in $CURRENT_DRIVER:
 
     promoted <tag>   served by install.sh's stable channel: no build needed,
-                     the tracked version may advance.
+                     the tracked version may advance. It is a promoted
+                     (full) release that is also approved for the TrueNAS
+                     train of $NEW_VERSION, the rule install.sh selects by: a
+                     verified-train marker for that train, or no marker at
+                     all (promoted before per-train sign-off). promote.yml
+                     writes the marker in the same update that promotes a
+                     stable build, so a promoted build is approved for the
+                     train it was built for; the check only matters when a
+                     kernel is shared across trains.
     pending <tag>    unpromoted stable build awaiting hardware test: no
                      duplicate build, but the tracked version must NOT
                      advance (that consumes the one-shot version-changed
@@ -16,7 +24,10 @@ the driver in $CURRENT_DRIVER:
     (nothing)        no coverage: build.
 
 Preview (BETA/RC) builds never count: they never promote, so the stable
-channel never serves them. A k-tag whose body lost the Target kernel row
+channel never serves them. A promoted build approved for other trains only
+does not count either, and is not pending: the installer does not serve it
+to this train, and no hardware test for this train will come for it, so the
+safe answer is to build. A k-tag whose body lost the Target kernel row
 counts only once promoted: unpromoted, it cannot be told apart from a
 preview build, and the safe default is to build.
 
@@ -37,9 +48,31 @@ import os
 import re
 import sys
 
+VT_RE = re.compile(r'^[ \t]*<!--\s*verified-train:\s*([^\s>]+?)\s*-->', re.M)
 
-def find_coverage(data, kver, driver):
-    """(kind, tag) for the release covering kver, or None."""
+
+def train_key(version):
+    """Train key of a TrueNAS version, the rule install.sh's
+    truenas_train_key applies: the major from 26 on (26.0.0-BETA.3 is 26),
+    major.minor before that (25.10.7 is 25.10). '' when there is none."""
+    m = re.match(r'(\d+)(?:$|\.(\d*))', version or '')
+    if not m:
+        return ''
+    if int(m.group(1)) >= 26:
+        return m.group(1)
+    return f'{m.group(1)}.{m.group(2)}' if m.group(2) else ''
+
+
+def approved_for(release, train):
+    """install.sh's approval gate for a promoted release: a verified-train
+    marker for the train, or no marker at all (grandfathered)."""
+    trains = set(VT_RE.findall(release.get('body') or ''))
+    return train in trains if trains else True
+
+
+def find_coverage(data, kver, driver, train=None):
+    """(kind, tag) for the release covering kver, or None. With a train,
+    promoted coverage must also be approved for it."""
     short = kver.split('-')[0]
     ker_re = re.compile(r'Target kernel\s*\|\s*`([^`]+)`')
     hdr_re = re.compile(r'for TrueNAS SCALE (\S+)')
@@ -66,7 +99,9 @@ def find_coverage(data, kver, driver):
         if tk == kver or (not tk and promoted
                           and tag.startswith(f'k{short}-gasket')):
             if promoted:
-                return ('promoted', tag)
+                if train is None or approved_for(r, train):
+                    return ('promoted', tag)
+                continue
             if pending is None:
                 pending = tag
     if pending:
@@ -88,8 +123,18 @@ def main():
         if isinstance(doc, list):
             data.extend(doc)
 
+    # The train the new version belongs to. check-releases.yml always sets
+    # NEW_VERSION; a version with no train key cannot be matched to an
+    # approval, so it builds.
+    train = None
+    if 'NEW_VERSION' in os.environ:
+        train = train_key(os.environ['NEW_VERSION'])
+        if not train:
+            print(f"NOTE: no TrueNAS train for version "
+                  f"{os.environ['NEW_VERSION']!r}; building.", file=sys.stderr)
+            return
     found = find_coverage(data, os.environ['NEW_KERNEL'],
-                          os.environ['CURRENT_DRIVER'])
+                          os.environ['CURRENT_DRIVER'], train)
     if not found:
         return
     # Transition guard (see module docstring).
