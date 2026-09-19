@@ -34,7 +34,7 @@ A build is keyed to the kernel, not the TrueNAS version: TrueNAS point releases 
 | Stable | `6.12.91-production+truenas` | 25.10.4 | Gasket 1.0-18.4 | [`v25.10.4-gasket1.0-18.4-r3`](https://github.com/truenas-community-sysexts/coral-pcie-support/releases/tag/v25.10.4-gasket1.0-18.4-r3) |
 | Stable | `6.12.33-production+truenas` | 25.10.0 - 25.10.3.1 | Gasket 1.0-18.4 | [`v25.10.3-gasket1.0-18.4-r7`](https://github.com/truenas-community-sysexts/coral-pcie-support/releases/tag/v25.10.3-gasket1.0-18.4-r7) |
 | Stable | `6.12.15-production+truenas` | 25.04.0 - 25.04.2.6 | - | _not built yet_ |
-| Preview (beta) | `6.18.42-production+truenas` | 26.0.0-BETA.3 | Gasket 1.0-18.4 | [`v26.0.0-BETA.3-gasket1.0-18.4-r10`](https://github.com/truenas-community-sysexts/coral-pcie-support/releases/tag/v26.0.0-BETA.3-gasket1.0-18.4-r10) |
+| Preview (beta) | `6.18.42-production+truenas` | 26.0.0-BETA.3 | Gasket 1.0-18.4 | [`k6.18.42-gasket1.0-18.4-r13`](https://github.com/truenas-community-sysexts/coral-pcie-support/releases/tag/k6.18.42-gasket1.0-18.4-r13) |
 | Preview (beta) | `6.18.23-production+truenas` | 26.0.0-BETA.2 | Gasket 1.0-18.4 | [`v26.0.0-BETA.2-gasket1.0-18.4-r6`](https://github.com/truenas-community-sysexts/coral-pcie-support/releases/tag/v26.0.0-BETA.2-gasket1.0-18.4-r6) |
 <!-- END supported-versions -->
 
