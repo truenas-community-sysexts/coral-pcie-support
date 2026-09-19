@@ -3,6 +3,7 @@
 Both parsers of the release-notes format (install.sh's release selection and
 gen-supported-versions.py) test against this one builder, so a template change
 breaks both suites instead of silently orphaning one fixture.
+test_notes_header_contract.py holds its header to the one build.yml renders.
 """
 
 

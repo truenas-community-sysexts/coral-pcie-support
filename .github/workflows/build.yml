@@ -87,7 +87,6 @@ jobs:
       runner: ${{ steps.params.outputs.runner }}
       iso_url: ${{ steps.params.outputs.iso_url }}
       mark_latest: ${{ steps.params.outputs.mark_latest }}
-      prerelease: ${{ steps.params.outputs.prerelease }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -131,12 +130,9 @@ jobs:
           GASKET="${INPUT_GASKET_DRIVER_VERSION:-$TRACKED_GASKET}"
           REF="${INPUT_GASKET_REF:-$TRACKED_REF}"
           RUNNER="${INPUT_RUNNER}"
-          MARK_LATEST="${INPUT_MARK_LATEST:-true}"
-          # Unverified auto-builds (mark_latest=false) are published as a
-          # PRERELEASE so GitHub keeps them out of /releases/latest (and thus
-          # install.sh) until a human promotes them. make_latest=false alone
-          # does NOT hold this gate with action-gh-release@v3.
-          if [ "$MARK_LATEST" = "true" ]; then PRERELEASE="false"; else PRERELEASE="true"; fi
+          # Fail closed: an empty or omitted mark_latest must never publish
+          # straight to Latest, bypassing the hardware-test gate.
+          MARK_LATEST="${INPUT_MARK_LATEST:-false}"
 
           if [ -z "$RUNNER" ]; then
             if [ -n "$INPUT_ISO_URL" ]; then
@@ -161,7 +157,6 @@ jobs:
             echo "runner=${RUNNER}"
             echo "iso_url=${INPUT_ISO_URL}"
             echo "mark_latest=${MARK_LATEST}"
-            echo "prerelease=${PRERELEASE}"
           } >> "$GITHUB_OUTPUT"
 
           echo "Resolved build parameters:"
@@ -173,7 +168,6 @@ jobs:
           echo "  runner=${RUNNER}"
           echo "  iso_url=${INPUT_ISO_URL:-(none)}"
           echo "  mark_latest=${MARK_LATEST}"
-          echo "  prerelease=${PRERELEASE}"
 
   build:
     needs: resolve
@@ -181,6 +175,8 @@ jobs:
     timeout-minutes: 90
     outputs:
       run_number: ${{ steps.build_id.outputs.run_number }}
+      short_kver: ${{ steps.kver.outputs.short_kver }}
+      real_kver: ${{ steps.kver.outputs.real_kver }}
 
     steps:
       - name: Checkout repository
@@ -437,6 +433,7 @@ jobs:
           key: kernel-headers-v3-${{ needs.resolve.outputs.truenas_version }}
 
       - name: Detect kernel version from cached headers
+        id: kver
         run: |
           # Same selector pattern as the extract step: prefer production,
           # fall back to non-debug, then fail loud rather than picking up
@@ -472,6 +469,12 @@ jobs:
           fi
           echo "Real kernel version: ${REAL_KVER}"
           echo "REAL_KVER=${REAL_KVER}" >> "$GITHUB_ENV"
+          # Short form (6.12.91 from 6.12.91-production+truenas) keys the
+          # release tag; exposed as a step output so workflow expressions can
+          # reference it, mirroring the build_id pattern. The full form feeds
+          # the hardware-test issue's kernel requirement.
+          echo "short_kver=${REAL_KVER%%-*}" >> "$GITHUB_OUTPUT"
+          echo "real_kver=${REAL_KVER}" >> "$GITHUB_OUTPUT"
 
           # Detect the GCC major version the kernel was compiled with.
           # Prefer include/config/cc-version-text (plain-text, one line);
@@ -668,8 +671,9 @@ jobs:
           BUILD_SHA: ${{ github.sha }}
           RUN_NUMBER: ${{ steps.build_id.outputs.run_number }}
           REPO: ${{ github.repository }}
+          SHORT_KVER: ${{ steps.kver.outputs.short_kver }}
         run: |
-          envsubst '${TRUENAS_VERSION} ${TRAIN_NAME} ${GASKET_DRIVER} ${GASKET_REF} ${GASKET_REPO} ${REAL_KVER} ${RUNNER_IMAGE} ${BUILD_SHA} ${REPO} ${RUN_NUMBER}' > release-notes.md <<'RELEASE_NOTES'
+          envsubst '${TRUENAS_VERSION} ${TRAIN_NAME} ${GASKET_DRIVER} ${GASKET_REF} ${GASKET_REPO} ${REAL_KVER} ${RUNNER_IMAGE} ${BUILD_SHA} ${REPO} ${RUN_NUMBER} ${SHORT_KVER}' > release-notes.md <<'RELEASE_NOTES'
           ## Coral PCIe TPU Sysext for TrueNAS SCALE ${TRUENAS_VERSION} (${TRAIN_NAME})
 
           | Field | Value |
@@ -679,6 +683,8 @@ jobs:
           | Target kernel | `${REAL_KVER}` |
           | Built on | `${RUNNER_IMAGE}` |
           | Source commit | [`${BUILD_SHA}`](https://github.com/${REPO}/commit/${BUILD_SHA}) |
+
+          This build targets kernel `${REAL_KVER}` and loads on any TrueNAS release shipping that exact kernel, not only ${TRUENAS_VERSION}. The README supported versions table lists the covered versions.
 
           **Target Device:** Google Coral PCIe TPU (M.2 / mini-PCIe). For USB Coral accelerators, no kernel module is needed.
 
@@ -691,7 +697,7 @@ jobs:
 
           ### Install
           ```bash
-          curl -fsSL https://github.com/${REPO}/releases/download/v${TRUENAS_VERSION}-gasket${GASKET_DRIVER}-r${RUN_NUMBER}/install.sh | sudo bash
+          curl -fsSL https://github.com/${REPO}/releases/download/k${SHORT_KVER}-gasket${GASKET_DRIVER}-r${RUN_NUMBER}/install.sh | sudo bash
           ```
 
           ### Verify
@@ -702,7 +708,7 @@ jobs:
 
           ### Uninstall
           ```bash
-          curl -fsSL https://github.com/${REPO}/releases/download/v${TRUENAS_VERSION}-gasket${GASKET_DRIVER}-r${RUN_NUMBER}/uninstall.sh | sudo bash
+          curl -fsSL https://github.com/${REPO}/releases/download/k${SHORT_KVER}-gasket${GASKET_DRIVER}-r${RUN_NUMBER}/uninstall.sh | sudo bash
           ```
 
           ### Checksums
@@ -744,8 +750,8 @@ jobs:
         id: release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: v${{ needs.resolve.outputs.truenas_version }}-gasket${{ needs.resolve.outputs.gasket_driver_version }}-r${{ needs.build.outputs.run_number }}
-          name: "TrueNAS ${{ needs.resolve.outputs.truenas_version }} - Gasket ${{ needs.resolve.outputs.gasket_driver_version }} (r${{ needs.build.outputs.run_number }})"
+          tag_name: k${{ needs.build.outputs.short_kver }}-gasket${{ needs.resolve.outputs.gasket_driver_version }}-r${{ needs.build.outputs.run_number }}
+          name: "Kernel ${{ needs.build.outputs.short_kver }} (TrueNAS ${{ needs.resolve.outputs.truenas_version }}) - Gasket ${{ needs.resolve.outputs.gasket_driver_version }} (r${{ needs.build.outputs.run_number }})"
           body_path: release-notes.md
           files: |
             coral.raw
@@ -761,39 +767,85 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish the draft (prerelease gate, or Latest on override)
+        id: publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           REL_ID: ${{ steps.release.outputs.id }}
           MARK_LATEST: ${{ needs.resolve.outputs.mark_latest }}
+          TRUENAS_VERSION: ${{ needs.resolve.outputs.truenas_version }}
         run: |
-          if [ "$MARK_LATEST" = "true" ]; then
-            gh api --method PATCH "repos/${REPO}/releases/${REL_ID}" -F draft=false -f make_latest=true
+          # A preview (BETA/RC) target always publishes as a prerelease, no
+          # matter what the dispatch says: k-tags carry no BETA marker, so the
+          # prerelease flag is the stable channel's primary lock against
+          # serving a beta build, and mark_latest must not be able to clear it.
+          IS_PREVIEW=false
+          case "$TRUENAS_VERSION" in
+            *-[Bb][Ee][Tt][Aa]*|*-[Rr][Cc]*) IS_PREVIEW=true ;;
+          esac
+          echo "is_preview=${IS_PREVIEW}" >> "$GITHUB_OUTPUT"
+          # Unverified and preview builds publish as a PRERELEASE so GitHub
+          # keeps them out of /releases/latest (and thus install.sh) until a
+          # human promotes them; make_latest=false alone does not hold that
+          # gate.
+          if [ "$MARK_LATEST" = "true" ] && [ "$IS_PREVIEW" != "true" ]; then
+            PUBLISH_ARGS=(-F draft=false -f make_latest=true)
           else
-            gh api --method PATCH "repos/${REPO}/releases/${REL_ID}" -F draft=false -F prerelease=true
+            if [ "$MARK_LATEST" = "true" ]; then
+              echo "::warning title=preview build::mark_latest ignored for preview target ${TRUENAS_VERSION}; published as prerelease"
+            fi
+            PUBLISH_ARGS=(-F draft=false -F prerelease=true)
+          fi
+          # Retry the publish PATCH: a transient API failure here would
+          # otherwise strand an invisible draft with attached assets, no
+          # hardware-test issue, and no surfaced error.
+          PUBLISHED=false
+          for ATTEMPT in 1 2 3; do
+            if gh api --method PATCH "repos/${REPO}/releases/${REL_ID}" "${PUBLISH_ARGS[@]}"; then
+              PUBLISHED=true
+              break
+            fi
+            if [ "$ATTEMPT" -lt 3 ]; then
+              echo "Publish attempt ${ATTEMPT} failed; retrying in $((ATTEMPT * 15))s"
+              sleep $((ATTEMPT * 15))
+            fi
+          done
+          if [ "$PUBLISHED" != "true" ]; then
+            # Keep the draft: a PATCH can succeed server-side with a dropped
+            # response, and a delete would then remove a published release
+            # while its tag survives. The assets stay recoverable.
+            echo "::error title=publish failed::could not publish draft release ${REL_ID} after 3 attempts; the draft and its assets are kept at https://github.com/${REPO}/releases. Publish it by hand, or delete it and re-run."
+            exit 1
           fi
 
       - name: Create hardware-test issue for auto-build
-        if: needs.resolve.outputs.mark_latest == 'false'
+        # A preview target forced to prerelease still needs its verification
+        # issue even when the dispatch said mark_latest=true.
+        if: needs.resolve.outputs.mark_latest == 'false' || steps.publish.outputs.is_preview == 'true'
         uses: actions/github-script@v9
         env:
           TRUENAS_VERSION: ${{ needs.resolve.outputs.truenas_version }}
           GASKET_DRIVER: ${{ needs.resolve.outputs.gasket_driver_version }}
           RUN_NUMBER: ${{ needs.build.outputs.run_number }}
+          SHORT_KVER: ${{ needs.build.outputs.short_kver }}
+          REAL_KVER: ${{ needs.build.outputs.real_kver }}
+          IS_PREVIEW: ${{ steps.publish.outputs.is_preview }}
         with:
           script: |
-            const tag = `v${process.env.TRUENAS_VERSION}-gasket${process.env.GASKET_DRIVER}-r${process.env.RUN_NUMBER}`;
+            const tag = `k${process.env.SHORT_KVER}-gasket${process.env.GASKET_DRIVER}-r${process.env.RUN_NUMBER}`;
             const releaseUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/releases/tag/${tag}`;
 
             // A pre-release TrueNAS target (BETA/RC) is the 26-beta preview
             // channel. Those builds must NEVER be promoted to Latest (that would
             // route stable installs to a beta via install.sh), so they get a
             // distinct label that promote.yml ignores. Their hardware-test issue
-            // is a verification record only — closing it does not promote.
-            const isPreview = /-(?:BETA|RC)\b/i.test(process.env.TRUENAS_VERSION);
+            // is a verification record only: closing it does not promote.
+            // Classified once, by the publish step; this step must agree with
+            // how the release was actually published.
+            const isPreview = process.env.IS_PREVIEW === 'true';
             const label = isPreview ? 'preview-hardware-test' : 'hardware-test';
             const labelDescription = isPreview
-              ? 'Preview (TrueNAS beta) build verification — never auto-promoted to Latest'
+              ? 'Preview (TrueNAS beta) build verification, never auto-promoted to Latest'
               : 'Auto-build awaiting hardware verification';
             const title = isPreview
               ? `Preview hardware test: TrueNAS ${process.env.TRUENAS_VERSION} / Gasket ${process.env.GASKET_DRIVER} (${tag})`
@@ -830,16 +882,25 @@ jobs:
               return;
             }
 
-            const promoteSection = isPreview
+            // Test procedure for a human tester, followed by hand, so every
+            // command must work exactly as written. install.sh loads
+            // coral-lib.sh from its own directory, so both are downloaded
+            // side by side; a local-raw install skips the checksum, so the
+            // steps verify it first. The two marker comments are parsed by
+            // promote.yml: keep them byte for byte.
+            const truenasVersion = process.env.TRUENAS_VERSION;
+            const kver = process.env.REAL_KVER;
+            const dl = `https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${tag}`;
+            const dir = `/tmp/coral-${tag}`;
+
+            const signOff = isPreview
               ? [
-                  `### Promote`,
-                  `This is a **TrueNAS ${process.env.TRUENAS_VERSION} preview build**. It is intentionally kept as a permanent **pre-release** and is **never** promoted to Latest, so stable installs are unaffected.`,
-                  `Once you've verified it on hardware, **close this issue as completed** to record the sign-off. The release stays a pre-release; install it explicitly via its tag.`,
+                  `3. **Close as completed** to record the sign-off. That is all it does: preview builds stay pre-releases and are never promoted to Latest, however this issue is closed.`,
                 ]
               : [
-                  `### Promote`,
-                  `This build is published as a **pre-release**, so it is not served by \`releases/latest\` (or install.sh) yet.`,
-                  `Once you've verified it on hardware, **close this issue as completed** — that automatically promotes [\`${tag}\`](${releaseUrl}) to the latest release and appends the changelog.`,
+                  `3. Close this issue:`,
+                  `   - **Close as completed** promotes [\`${tag}\`](${releaseUrl}): promote.yml turns the pre-release into a full release and appends the changelog. It becomes **Latest** only if it ranks highest among the stable releases (newest target kernel first); otherwise it is promoted without taking Latest.`,
+                  `   - **Close as not planned** rejects it: nothing is promoted, and the build stays a pre-release that stable installs never receive.`,
                 ];
 
             await github.rest.issues.create({
@@ -849,28 +910,75 @@ jobs:
               labels: [label],
               body: [
                 isPreview
-                  ? `An auto-build published a new **TrueNAS preview (beta)** release that needs hardware verification. It stays a pre-release permanently.`
-                  : `An auto-build published a new release that needs hardware verification before being promoted to **Latest**.`,
+                  ? `An auto-build published a new **TrueNAS preview (beta)** Coral PCIe TPU sysext release that needs hardware verification. It stays a pre-release permanently and is never promoted to Latest.`
+                  : `An auto-build published a new Coral PCIe TPU sysext release that needs hardware verification before it can be promoted. Until then it is a pre-release, which stable installs never receive.`,
                 ``,
                 `**Release:** [${tag}](${releaseUrl})`,
                 `<!-- release-tag: ${tag} -->`,
-                `**TrueNAS:** ${process.env.TRUENAS_VERSION}`,
+                `<!-- preview-build: ${isPreview} -->`,
+                `**TrueNAS:** ${truenasVersion}`,
+                `**Kernel:** \`${kver}\``,
                 `**Gasket:** ${process.env.GASKET_DRIVER}`,
                 ``,
-                `### Install THIS build to test it`,
-                `It is a **pre-release**, so the default \`latest\` install (and version auto-resolve) skip it. Install this exact build:`,
+                `The steps below install this exact build from its own release assets, whatever the one line installer would pick.`,
+                ``,
+                `### Requirements`,
+                `- TrueNAS ${truenasVersion}, or any TrueNAS version whose \`uname -r\` prints exactly \`${kver}\`. The modules only load on that kernel, and the installer refuses an image built for a different one.`,
+                `- A Coral PCIe TPU (M.2, Dual Edge M.2, or Mini PCIe) installed in this system.`,
+                `- A shell on the TrueNAS host (SSH or the web UI shell) with sudo.`,
+                ``,
+                `### 1. Pre-checks`,
                 "```bash",
-                `curl -fsSL https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${tag}/coral.raw -o /tmp/coral.raw`,
-                `curl -fsSL https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${tag}/install.sh | sudo bash -s -- /tmp/coral.raw`,
+                `uname -r                  # must print exactly: ${kver}`,
+                `lspci -nn | grep -i 1ac1  # Coral present: one line per TPU, containing [1ac1:089a]`,
+                "```",
+                `If \`uname -r\` prints anything else, stop: this build cannot load on this system.`,
+                ``,
+                `If Frigate (or another app) uses the TPU, stop it first, under Apps in the web UI or with (use your app's name if it is not \`frigate\`):`,
+                "```bash",
+                `sudo midclt call -j app.stop frigate`,
                 "```",
                 ``,
-                `### Test checklist`,
-                `- [ ] Download and install on a TrueNAS system with a Coral PCIe TPU`,
-                `- [ ] Confirm \`/dev/apex_0\` exists after module load`,
-                `- [ ] Confirm Frigate detects the Coral TPU`,
-                `- [ ] Reboot and confirm the PREINIT script restores the sysext`,
+                `### 2. Install this build`,
+                `Download this release's files into one directory, verify the image, then install from the local file:`,
+                "```bash",
+                `mkdir -p ${dir} && cd ${dir}`,
+                `curl -fsSL -o coral.raw ${dl}/coral.raw`,
+                `curl -fsSL -o coral.raw.sha256 ${dl}/coral.raw.sha256`,
+                `curl -fsSL -o install.sh ${dl}/install.sh`,
+                `curl -fsSL -o coral-lib.sh ${dl}/coral-lib.sh`,
+                `sha256sum -c coral.raw.sha256   # must print: coral.raw: OK`,
+                `sudo bash install.sh coral.raw  # prints "Device /dev/apex_0 detected!" and "=== Persistence setup complete ==="`,
+                "```",
+                `With several data pools and no existing Coral config, the installer asks which pool keeps its files; add \`--pool=NAME\` to choose up front.`,
                 ``,
-                ...promoteSection,
+                `### 3. Verify`,
+                `From the same directory:`,
+                "```bash",
+                `sudo bash install.sh --check   # Summary must show 0 fail; before the reboot, a "No coral-preinit entries this boot" warning is fine`,
+                `ls -l /dev/apex_*              # crw-rw-rw- ... /dev/apex_0 (plus /dev/apex_1 on a Dual Edge TPU)`,
+                `lsmod | grep -E 'gasket|apex'  # two lines: apex, and gasket (listing apex as its user)`,
+                "```",
+                ``,
+                `### 4. Reboot and re-verify`,
+                "```bash",
+                `sudo reboot`,
+                "```",
+                `The reboot may clear /tmp, so fetch the two scripts again (safe to repeat; the installed image lives on your pool), then re-run the checks:`,
+                "```bash",
+                `mkdir -p ${dir} && cd ${dir}`,
+                `curl -fsSL -o install.sh ${dl}/install.sh`,
+                `curl -fsSL -o coral-lib.sh ${dl}/coral-lib.sh`,
+                `sudo bash install.sh --check                    # Summary must show 0 warn, 0 fail, including "PREINIT completed successfully this boot"`,
+                `ls -l /dev/apex_*                               # same as step 3`,
+                `lsmod | grep -E 'gasket|apex'                   # same as step 3`,
+                `sudo journalctl -b -t coral-preinit --no-pager  # PREINIT log for this boot: last line ends with "Done", no ERROR lines`,
+                "```",
+                ``,
+                `### 5. Report and sign off`,
+                `1. Start Frigate again (under Apps in the web UI, or \`sudo midclt call -j app.start frigate\`) and check its log shows \`TPU found\`.`,
+                `2. Comment on this issue with the \`uname -r\` output, your hardware (Coral model and host system), and the output of the step 3 and step 4 commands.`,
+                ...signOff,
               ].join('\n'),
             });
             console.log(`Created ${label} issue for ${tag}`);
