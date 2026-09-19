@@ -762,15 +762,25 @@ if_real ldconfig
 # Load the kernel modules (use insmod directly, /lib/modules is read-only on
 # TrueNAS so depmod can't update module deps, and modprobe can't find modules
 # without it). gasket must be loaded before apex (apex depends on gasket).
+# A module already loaded (reinstall on the same kernel) would make insmod
+# fail with "File exists"; the loaded one stays in use until the next reboot.
 echo "Loading Coral kernel modules..."
 GASKET_KO="/usr/lib/modules/$(uname -r)/extra/gasket.ko"
 APEX_KO="/usr/lib/modules/$(uname -r)/extra/apex.ko"
 if [ "$DRY_RUN" = "1" ]; then
-    echo "[dry-run] would: insmod ${GASKET_KO} (if present)"
-    echo "[dry-run] would: insmod ${APEX_KO} (if present)"
+    echo "[dry-run] would: insmod ${GASKET_KO} (if present and not already loaded)"
+    echo "[dry-run] would: insmod ${APEX_KO} (if present and not already loaded)"
 elif [ -f "$GASKET_KO" ] && [ -f "$APEX_KO" ]; then
-    insmod "$GASKET_KO" || echo "WARNING: insmod gasket failed"
-    insmod "$APEX_KO" || echo "WARNING: insmod apex failed (device may not be present)"
+    if [ -e /sys/module/gasket ]; then
+        echo "gasket already loaded, skipping insmod (the new build's module loads at the next reboot)"
+    else
+        insmod "$GASKET_KO" || echo "WARNING: insmod gasket failed"
+    fi
+    if [ -e /sys/module/apex ]; then
+        echo "apex already loaded, skipping insmod (the new build's module loads at the next reboot)"
+    else
+        insmod "$APEX_KO" || echo "WARNING: insmod apex failed (device may not be present)"
+    fi
 else
     [ ! -f "$GASKET_KO" ] && echo "WARNING: gasket.ko not found at ${GASKET_KO}"
     [ ! -f "$APEX_KO" ] && echo "WARNING: apex.ko not found at ${APEX_KO}"
