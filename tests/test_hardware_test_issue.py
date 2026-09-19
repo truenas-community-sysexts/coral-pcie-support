@@ -184,6 +184,24 @@ class Procedure(unittest.TestCase):
         self.assertIn("Kernel version mismatch",
                       (ROOT / "scripts" / "coral-preinit.sh").read_text())
 
+    def test_step_2_explains_the_same_kernel_insmod_warnings(self):
+        # Reinstalling on the running kernel with the modules loaded: insmod
+        # refuses them (File exists) and install.sh warns, harmlessly. The
+        # WARNING lines quoted must be what install.sh prints.
+        text = INSTALL_SH.read_text()
+        for body in (self.stable, self.preview):
+            step2 = body[body.index("### 2. Install this build"):
+                         body.index("### 3. Verify")]
+            self.assertIn("Reinstalling on the same kernel while the Coral "
+                          "modules are loaded", step2)
+            self.assertIn("could not insert module ...: File exists", step2)
+            self.assertIn("this build's modules load at the reboot in "
+                          "step 4", step2)
+            quoted = re.findall(r"`(WARNING: [^`]+)`", step2)
+            self.assertEqual(len(quoted), 2, step2)
+            for q in quoted:
+                self.assertIn(q, text)
+
     def test_sign_off_semantics(self):
         self.assertIn("**Close as completed** promotes", self.stable)
         self.assertIn("**Close as not planned** rejects it", self.stable)
