@@ -1,24 +1,15 @@
 """Offline unit tests for .github/scripts/gen-supported-versions.py."""
 import importlib.util
+import json
 import unittest
 from pathlib import Path
+
+from release_fixtures import release
 
 SCRIPT = Path(__file__).resolve().parents[1] / ".github" / "scripts" / "gen-supported-versions.py"
 spec = importlib.util.spec_from_file_location("gen_supported_versions", SCRIPT)
 gsv = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gsv)
-
-
-def release(tag, version, train, kver, prerelease=False,
-            published="2026-01-01T00:00:00Z"):
-    body = (f"## Coral PCIe TPU Sysext for TrueNAS SCALE {version} ({train})\n"
-            "| Field | Value |\n| --- | --- |\n"
-            "| Gasket driver | `1.0-18.4` |\n")
-    if kver:
-        body += f"| Target kernel | `{kver}` |\n"
-    return {"tag_name": tag, "body": body, "prerelease": prerelease,
-            "draft": False, "html_url": f"https://example.test/{tag}",
-            "published_at": published}
 
 
 KERNEL_MAP = {"trains": {"Goldeye": {
@@ -33,6 +24,7 @@ KERNEL_MAP = {"trains": {"Goldeye": {
 
 def rows_for(releases, kernel_map=KERNEL_MAP):
     parsed = gsv.parse_releases(releases)
+    gsv.resolve_ktag_kernels(parsed, kernel_map)
     stable, preview = gsv.served_releases(parsed)
     return gsv.build_rows(stable, preview, kernel_map,
                           gsv.kernel_winners(parsed),
@@ -95,6 +87,27 @@ class KernelRows(unittest.TestCase):
         row = [r for r in rows if r["channel"] == "Stable"
                and r["kver"] == "6.12.91-production+truenas"][0]
         self.assertEqual(row["tag"], "")
+
+    def test_promoted_ktag_with_lost_body_fills_its_kernel_row(self):
+        # install.sh serves a promoted k-tagged release by tag even when the
+        # body lost its Target kernel row; the table must say the same
+        # instead of "not built yet". The kernel map recovers the full
+        # kernel string from the tag's short form.
+        rel = dict(release("k6.12.91-gasket1.0-18.4-r50"), body="")
+        rows = rows_for([rel])
+        row = [r for r in rows if r["kver"] == "6.12.91-production+truenas"][0]
+        self.assertEqual(row["tag"], "k6.12.91-gasket1.0-18.4-r50")
+
+    def test_unpromoted_ktag_with_lost_body_stays_off_the_table(self):
+        # With the body gone an unpromoted k-tag cannot be told apart from a
+        # preview build, so it must not fill the kernel row or its pending
+        # slot (check-kernel-coverage.py applies the same rule).
+        rel = dict(release("k6.12.91-gasket1.0-18.4-r50", prerelease=True),
+                   body="")
+        rows = rows_for([rel])
+        row = [r for r in rows if r["kver"] == "6.12.91-production+truenas"][0]
+        self.assertEqual(row["tag"], "")
+        self.assertEqual(row["pending_tag"], "")
 
     def test_newest_kernel_row_first(self):
         rows = rows_for([])
@@ -178,10 +191,32 @@ class RenderTable(unittest.TestCase):
         self.assertIn("awaiting hardware-test promotion", line)
         self.assertNotIn("not built yet", line)
 
+    def test_empty_cells_use_plain_dash(self):
+        # House style: no em dashes in generated README text.
+        rows = rows_for([release("v25.10.3-gasket1.0-18.4-r2", "25.10.3",
+                                 "Goldeye", None)])
+        lines = gsv.render_table(rows) + gsv.render_table([])
+        self.assertFalse([ln for ln in lines if "\u2014" in ln])
+        unbuilt = [ln for ln in lines if "6.12.91" in ln][0]
+        self.assertIn("| 25.10.4 | - | _not built yet_ |", unbuilt)
+        legacy = [ln for ln in lines if "v25.10.3-gasket1.0-18.4-r2" in ln][0]
+        self.assertTrue(legacy.startswith("| Stable | - | 25.10.3 |"), legacy)
+        self.assertIn("| _none_ | - | _no data yet_ | - | - |", lines)
+
     def test_version_range_helper(self):
         self.assertEqual(gsv.version_range(["25.10.0"]), "25.10.0")
         self.assertEqual(gsv.version_range(["25.10.3.1", "25.10.0", "25.10.2"]),
                          "25.10.0 - 25.10.3.1")
+
+
+class ReadReleases(unittest.TestCase):
+    def test_concatenated_pages_are_merged(self):
+        text = json.dumps([{"a": 1}]) + "\n" + json.dumps([{"b": 2}]) + "\n"
+        self.assertEqual(gsv.read_releases(text), [{"a": 1}, {"b": 2}])
+
+    def test_api_error_object_aborts(self):
+        with self.assertRaises(SystemExit):
+            gsv.read_releases(json.dumps({"message": "rate limited"}))
 
 
 if __name__ == "__main__":
