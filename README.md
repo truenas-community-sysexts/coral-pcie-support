@@ -15,9 +15,9 @@ A systemd-sysext package that adds [Google Coral](https://coral.ai/) PCIe TPU su
 
 ### Supported TrueNAS versions
 
-Builds come in two channels: **Stable** (promoted to a full release by its hardware test) and **Preview** (TrueNAS 27 RC, always a **pre-release**: experimental, not for production).
+Builds come in two channels: **Stable** (TrueNAS releases) and **Preview** (TrueNAS 27 RC: experimental, not for production). On both, a build becomes a full release once its hardware test passes, and GitHub's **Latest** is the newest build that passed one, on any train.
 
-**Nothing untested is installed.** Every build is published as a pre-release, and a build installs only once a hardware test on the TrueNAS train it was built for signs it off (closing its hardware-test issue as completed writes a `verified-train` marker into its release notes). A 26 sign-off approves a build for TrueNAS 26 boxes only; a 25.10 box keeps the newest build verified on 25.10. Releases promoted before per-train sign-off count for every train. The train is the major version from 26 on (every 26.x release, betas included, is train 26) and major.minor before that (25.10).
+**Nothing untested is installed.** Every build is published as a pre-release, and a build installs only once a hardware test on the TrueNAS train it was built for signs it off (closing its hardware-test issue as completed writes a `verified-train` marker into its release notes). A 27 sign-off approves a build for TrueNAS 27 boxes only; a 25.10 box keeps the newest build verified on 25.10, and a stable box never installs a preview build. Releases promoted before per-train sign-off count for every train. The train is the major version from 26 on (every 27.x release, RCs included, is train 27; TrueNAS 26 was renamed 27 at its first RC) and major.minor before that (25.10).
 
 The table below is generated from the TrueNAS kernel map and this repo's **actual published releases**, so it lists every known stable kernel, not just the ones with a build. A row with a linked release is installable right now; a row without one is not, so check back after the daily build, or [build it yourself](docs/build.md).
 

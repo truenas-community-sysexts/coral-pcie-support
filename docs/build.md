@@ -30,15 +30,16 @@ If anything moved, the workflow writes the file in one commit and dispatches bui
 
 ## Per-train approval
 
-A hardware test approves a build for the TrueNAS **train** it was built for, and nothing unapproved is installed on any box, stable or preview. The train is the major version from 26 on (every 26.x release, betas included, is train `26`) and major.minor before that (`25.10`).
+A hardware test approves a build for the TrueNAS **train** it was built for, and nothing unapproved is installed on any box, stable or preview. The train is the major version from 26 on (every 27.x release, RCs included, is train `27`) and major.minor before that (`25.10`).
 
 - `build.yml` publishes **every** build as a pre-release and opens one issue for it: `hardware-test` for a stable target, `preview-hardware-test` for a preview (BETA/RC) one. There is no way to publish a build straight to Latest: a full release with no approval marker counts as approved for every train (the grandfather rule below), so it would reach every box untested. The old `mark_latest` dispatch input is gone.
 - `promote.yml` runs when either issue is closed as **completed**. It reads the TrueNAS version from the release notes header (`for TrueNAS SCALE <version>`), derives its train, and appends `<!-- verified-train: <train> -->` to the release notes, once.
-  - A stable build is also promoted as before: it becomes a full release, takes **Latest** only if it ranks highest (newest target kernel first, the existing `cmpRank`), and gets its changelog. Marker, promotion and changelog go in one release update.
-  - A preview build gets the marker only: it stays a pre-release and is never promoted.
+  - The build, stable or preview, becomes a full release: one that passed a hardware test is a release, whichever train it was tested on. It gets its changelog, counted from the previous full release of the same channel. Marker, promotion and changelog go in one release update.
+  - It takes **Latest** if it is the newest signed-off build on any train, by build order (the `-r<N>` run number), so signing off an older build late never moves Latest backwards.
+  - A stable box still never installs a preview build: the installers refuse BETA/RC builds there whatever the release flag says.
   - Closing as **not planned** changes nothing.
 - `get.sh`, `install.sh` and `uninstall.sh` select, among the releases built for the running kernel, the newest one whose notes carry the box's train marker, or that is a full release with no marker at all (**grandfathered**: promoted before per-train sign-off). GitHub's Latest flag is cosmetic for them: they never select by it.
-- Preview builds that were signed off before per-train approval (2026-09-19) are pre-releases, so the grandfather rule does not cover them; they get a one-time `verified-train: 26` marker, added to their release notes by hand.
+- The grandfather rule never covers a preview build: a preview release with no marker is approved for no train. Preview builds signed off before per-train approval (2026-09-19) got a one-time `verified-train: 26` marker by hand, and every signed-off preview build was made a full release on 2026-10-06.
 
 ## Kernel-keyed builds
 

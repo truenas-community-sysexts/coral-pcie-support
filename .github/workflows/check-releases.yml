@@ -561,9 +561,9 @@ jobs:
       # release has both"); a TrueNAS-only bump on one channel builds only that
       # channel. Every build publishes as a prerelease that no install
       # receives until its hardware-test issue is closed as completed
-      # (build.yml has no publish-to-Latest path); preview builds additionally
-      # never promote (build.yml gives them the preview-hardware-test label,
-      # and promote.yml only approves them for their train).
+      # (build.yml has no publish-to-Latest path). A signed-off build becomes
+      # a full release for its own train only; preview builds carry the
+      # preview-hardware-test label and never install on a stable box.
       # -----------------------------------------------------------------------
       - name: Trigger stable build
         if: >-
