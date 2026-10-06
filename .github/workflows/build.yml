@@ -807,17 +807,17 @@ jobs:
             const tag = `k${process.env.SHORT_KVER}-gasket${process.env.GASKET_DRIVER}-r${process.env.RUN_NUMBER}`;
             const releaseUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/releases/tag/${tag}`;
 
-            // A pre-release TrueNAS target (BETA/RC) is the 26-beta preview
-            // channel. Those builds must NEVER be promoted to Latest (that would
-            // route stable installs to a beta via install.sh), so they get a
-            // distinct label: closing their issue as completed approves the
-            // build for its train (promote.yml adds the verified-train marker)
-            // but never promotes it. Classified once, by the publish step;
-            // this step must agree with how the release was actually published.
+            // A pre-release TrueNAS target (BETA/RC) is the preview channel.
+            // Its builds get a distinct label so testers know which kind of
+            // box the issue needs. Closing either kind as completed promotes
+            // the build to a full release for its own train (promote.yml); the
+            // installers still never put a preview build on a stable box.
+            // Classified once, by the publish step; this step must agree with
+            // how the release was actually published.
             const isPreview = process.env.IS_PREVIEW === 'true';
             const label = isPreview ? 'preview-hardware-test' : 'hardware-test';
             const labelDescription = isPreview
-              ? 'Preview (TrueNAS beta) build verification, never auto-promoted to Latest'
+              ? 'Preview (TrueNAS beta/RC) build awaiting hardware verification'
               : 'Auto-build awaiting hardware verification';
             // Train key of a TrueNAS version, the rule install.sh's
             // truenas_train_key applies: the major from 26 on (26.0.0-BETA.3
@@ -882,17 +882,11 @@ jobs:
             const dl = `https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/${tag}`;
             const dir = `/tmp/coral-${tag}`;
 
-            const signOff = isPreview
-              ? [
-                  `3. Close this issue:`,
-                  `   - **Close as completed** approves [\`${tag}\`](${releaseUrl}) for TrueNAS train \`${train}\`: promote.yml adds the verified-train marker to its release notes, and \`get.sh\` then installs it on train \`${train}\` boxes whose kernel is \`${process.env.REAL_KVER}\`. That is all it does: preview builds stay pre-releases and are never promoted to Latest, however this issue is closed.`,
-                  `   - **Close as not planned** rejects it: nothing is approved, so installs never receive this build.`,
-                ]
-              : [
-                  `3. Close this issue:`,
-                  `   - **Close as completed** promotes [\`${tag}\`](${releaseUrl}): promote.yml turns the pre-release into a full release, approves it for TrueNAS train \`${train}\` (the verified-train marker in its release notes) and appends the changelog. \`get.sh\` then installs it on train \`${train}\` boxes whose kernel is \`${process.env.REAL_KVER}\`. It becomes **Latest** only if it ranks highest among the stable releases (newest target kernel first); otherwise it is promoted without taking Latest.`,
-                  `   - **Close as not planned** rejects it: nothing is promoted, and the build stays a pre-release that stable installs never receive.`,
-                ];
+            const signOff = [
+              `3. Close this issue:`,
+              `   - **Close as completed** promotes [\`${tag}\`](${releaseUrl}): promote.yml turns the pre-release into a full release, approves it for TrueNAS train \`${train}\` (the verified-train marker in its release notes) and appends the changelog. \`get.sh\` then installs it on train \`${train}\` boxes whose kernel is \`${process.env.REAL_KVER}\`, and boxes on other trains never receive it. It becomes **Latest** if it is the newest signed-off build on any train (by build order); otherwise it is promoted without taking Latest.`,
+              `   - **Close as not planned** rejects it: nothing is promoted or approved, so installs never receive this build.`,
+            ];
 
             await github.rest.issues.create({
               owner: context.repo.owner,
@@ -901,7 +895,7 @@ jobs:
               labels: [label],
               body: [
                 isPreview
-                  ? `An auto-build published a new **TrueNAS preview (beta)** Coral PCIe TPU sysext release that needs hardware verification. Until this test signs it off for TrueNAS train \`${train}\`, installs never receive it. It stays a pre-release permanently and is never promoted to Latest.`
+                  ? `An auto-build published a new **TrueNAS preview (beta/RC)** Coral PCIe TPU sysext release that needs hardware verification. Until this test signs it off for TrueNAS train \`${train}\`, installs never receive it. Signing it off makes it a full release for that train only; stable boxes never install a preview build.`
                   : `An auto-build published a new Coral PCIe TPU sysext release that needs hardware verification before it can be promoted. Until then it is a pre-release, which stable installs never receive.`,
                 ``,
                 `**Release:** [${tag}](${releaseUrl})`,

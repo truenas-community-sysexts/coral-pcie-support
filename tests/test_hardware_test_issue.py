@@ -258,10 +258,13 @@ class Procedure(unittest.TestCase):
                 self.assertIn(q, text)
 
     def test_sign_off_semantics(self):
-        self.assertIn("**Close as completed** promotes", self.stable)
-        self.assertIn("**Close as not planned** rejects it", self.stable)
-        self.assertNotIn("promotes [", self.preview)
-        self.assertIn("never promoted to Latest", self.preview)
+        # A sign-off promotes on either channel; a preview build still never
+        # reaches a stable box.
+        for body in (self.stable, self.preview):
+            self.assertIn("**Close as completed** promotes", body)
+            self.assertIn("**Close as not planned** rejects it", body)
+            self.assertIn("newest signed-off build on any train", body)
+        self.assertIn("stable boxes never install a preview build", self.preview)
 
 
 
@@ -275,9 +278,9 @@ class TrainApproval(unittest.TestCase):
         self.assertIn("approves it for TrueNAS train `25.10`", body)
         self.assertIn(f"boxes whose kernel is `{K105}`", body)
 
-    def test_preview_issue_names_its_train_and_does_not_promote(self):
+    def test_preview_issue_names_its_train(self):
         body = render_issue("26.0.0-BETA.3", K42, run="15", preview=True)["body"]
-        self.assertIn("**Close as completed** approves [`k6.18.42-gasket1.0-18.4-r15`]",
+        self.assertIn("**Close as completed** promotes [`k6.18.42-gasket1.0-18.4-r15`]",
                       body)
         self.assertIn("for TrueNAS train `26`", body)
         self.assertIn("Until this test signs it off for TrueNAS train `26`, "
