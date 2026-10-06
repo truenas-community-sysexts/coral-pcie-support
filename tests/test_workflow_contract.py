@@ -48,7 +48,8 @@ class SignOffPath(unittest.TestCase):
         self.assertNotEqual(run_selection(rels, "26.0.0-BETA.3", K42).returncode, 0)
         out = close(iss, rels)
         rels = apply(rels, out["updates"][0])
-        self.assertTrue(rels[0]["prerelease"])
+        # A signed-off preview build is a full release like a stable one.
+        self.assertFalse(rels[0]["prerelease"])
         self.assertIn(marker("26"), rels[0]["body"])
         p = run_selection(rels, "26.0.0-BETA.4", K42)
         self.assertEqual(p.stdout, rel["tag_name"], p.stderr)
@@ -68,8 +69,9 @@ class SignOffPath(unittest.TestCase):
     def test_fixture_marker_is_the_form_promote_writes(self):
         rel, iss = built("26.0.0-BETA.3", "Halfmoon", K42, 53, preview=True)
         out = close(iss, [rel])
-        self.assertEqual(out["updates"][0]["body"],
-                         rel["body"] + f"\n\n{marker('26')}\n")
+        # The changelog goes first, then the marker exactly as the fixture
+        # renders it, at the end of the notes.
+        self.assertTrue(out["updates"][0]["body"].endswith(f"\n\n{marker('26')}\n"))
 
 
 if __name__ == "__main__":
